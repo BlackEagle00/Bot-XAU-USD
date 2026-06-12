@@ -4,19 +4,10 @@
 ╚══════════════════════════════════════════════════════════════╝
 Edita este archivo antes de ejecutar el bot.
 """
-
-"""
-Name     : Name     : 
-Type     : Forex Hedged USD
-Server   : MetaQuotes-Demo
-Login    : 10011299165
-Password : 1wZwC!Vw
-Investor : OpNuQc_6
-"""
-
 import MetaTrader5 as mt5
 
 # ─── CUENTA MT5 ────────────────────────────────────────────────────────────────
+# ─── CREDENCIALES DE EJEMPLO CUENTA DEMO ───────────────────────────────────────
 MT5_LOGIN    = 10011299165           # Número de cuenta (0 = usar cuenta activa en el terminal)
 MT5_PASSWORD = "1wZwC!Vw"          # Contraseña de la cuenta
 MT5_SERVER   = "MetaQuotes-Demo"          # Servidor del broker (ej: "ICMarkets-Demo02")
