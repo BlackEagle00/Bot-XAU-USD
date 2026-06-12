@@ -1,0 +1,429 @@
+"""
+Motor de Señales — XAU/USD Scalping Bot
+
+Sistema de puntuación ponderada (score máximo ≈ ±12):
+┌──────────────────────┬───────┬───────────────────┐
+│ Componente           │ Peso  │ Rango bruto        │
+├──────────────────────┼───────┼───────────────────┤
+│ EMAs (posición+cruce)│ ×1.0  │ -3.0  a +3.0       │
+│ RSI                  │ ×0.9  │ -2.0  a +2.0       │
+│ MACD                 │ ×0.9  │ -2.0  a +2.0       │
+│ Patrones de velas    │ ×0.8  │ -4.0  a +4.0       │
+│ Bollinger Bands      │ ×0.6  │ -2.0  a +2.0       │
+│ Soporte/Resistencia  │ ×0.5  │ -1.5  a +1.5       │
+│ VWAP                 │ ×0.3  │ -1.0  a +1.0       │
+│ Volumen              │ ×0.2  │ -0.5  a +0.5       │
+│ Confirmación TF sup. │ ×0.4  │ (del score EMA)    │
+└──────────────────────┴───────┴───────────────────┘
+
+ score ≥ +MIN_SIGNAL_SCORE → BUY
+ score ≤ -MIN_SIGNAL_SCORE → SELL
+"""
+import pandas as pd
+from typing import Tuple
+from logger_config import logger
+from config import RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPONENTES INDIVIDUALES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _determine_trend(ind: dict) -> str:
+    """
+    Determina la tendencia de fondo con las EMAs.
+    Returns: "up" | "down" | "neutral"
+    """
+    e9, e21, e50, e200 = (
+        ind.get("ema9"), ind.get("ema21"),
+        ind.get("ema50"), ind.get("ema200")
+    )
+    if None in [e9, e21, e50, e200]:
+        return "neutral"
+    if e9 > e21 > e50 and e50 > e200:
+        return "up"
+    if e9 < e21 < e50 and e50 < e200:
+        return "down"
+    # Tendencia parcial
+    if e9 > e50:
+        return "up"
+    if e9 < e50:
+        return "down"
+    return "neutral"
+
+
+def _score_ema(ind: dict, price: float) -> Tuple[float, list]:
+    """
+    Puntuación EMA. Evalúa:
+      • Posición del precio respecto a cada EMA
+      • Alineación en cascada (EMA9 > EMA21 > EMA50 > EMA200)
+      • Cruce reciente de EMA9 / EMA21
+    Rango: -3.0 a +3.0
+    """
+    e9, e21, e50, e200 = (
+        ind.get("ema9"), ind.get("ema21"),
+        ind.get("ema50"), ind.get("ema200")
+    )
+    e9_p  = ind.get("ema9_prev")
+    e21_p = ind.get("ema21_prev")
+    notes, score = [], 0.0
+
+    if None in [e9, e21, e50, e200]:
+        return 0.0, notes
+
+    # Posición del precio
+    if price > e9:   score += 0.30; notes.append("Precio > EMA9")
+    else:             score -= 0.30
+    if price > e21:  score += 0.40; notes.append("Precio > EMA21")
+    else:             score -= 0.40
+    if price > e50:  score += 0.45; notes.append("Precio > EMA50")
+    else:             score -= 0.45
+    if price > e200: score += 0.45; notes.append("Precio > EMA200")
+    else:             score -= 0.45
+
+    # Alineación en cascada
+    if e9 > e21 > e50 > e200:
+        score += 1.4; notes.append("✅ EMAs 100% alcistas")
+    elif e9 < e21 < e50 < e200:
+        score -= 1.4; notes.append("🔻 EMAs 100% bajistas")
+    elif e9 > e21 > e50:
+        score += 0.8; notes.append("EMA9>21>50 alcista")
+    elif e9 < e21 < e50:
+        score -= 0.8; notes.append("EMA9<21<50 bajista")
+
+    # Cruce EMA9/EMA21 (señal de momentum)
+    if None not in [e9_p, e21_p]:
+        if e9_p <= e21_p and e9 > e21:
+            score += 0.5; notes.append("🔀 Cruce alcista EMA9/21")
+        elif e9_p >= e21_p and e9 < e21:
+            score -= 0.5; notes.append("🔀 Cruce bajista EMA9/21")
+
+    return max(-3.0, min(3.0, score)), notes
+
+
+def _score_rsi(ind: dict) -> Tuple[float, list]:
+    """
+    Puntuación RSI. Evalúa zonas y dirección.
+    Rango: -2.0 a +2.0
+    """
+    rsi   = ind.get("rsi")
+    rsi_p = ind.get("rsi_prev")
+    notes, score = [], 0.0
+
+    if rsi is None:
+        return 0.0, notes
+
+    # Zonas de sobrecompra / sobreventa
+    if rsi <= RSI_OS:           # < 30 sobreventa
+        score += 1.5; notes.append(f"RSI sobreventa ({rsi:.1f})")
+    elif rsi <= 40:
+        score += 0.7; notes.append(f"RSI zona alcista ({rsi:.1f})")
+    elif rsi >= RSI_OB:         # > 70 sobrecompra
+        score -= 1.5; notes.append(f"RSI sobrecompra ({rsi:.1f})")
+    elif rsi >= 60:
+        score -= 0.7; notes.append(f"RSI zona bajista ({rsi:.1f})")
+    # Zona neutra 40-60 → no suma ni resta
+
+    # Dirección del RSI
+    if rsi_p is not None:
+        if rsi > rsi_p:    score += 0.3; notes.append("RSI ↑ subiendo")
+        elif rsi < rsi_p:  score -= 0.3; notes.append("RSI ↓ bajando")
+
+    # Divergencia básica: RSI fuertemente en zona y virando
+    if rsi_p is not None:
+        if rsi_p < RSI_OS and rsi > rsi_p:
+            score += 0.3; notes.append("RSI saliendo de sobreventa ↗")
+        elif rsi_p > RSI_OB and rsi < rsi_p:
+            score -= 0.3; notes.append("RSI saliendo de sobrecompra ↘")
+
+    return max(-2.0, min(2.0, score)), notes
+
+
+def _score_macd(ind: dict) -> Tuple[float, list]:
+    """
+    Puntuación MACD. Evalúa línea, señal, histograma y cruces.
+    Rango: -2.0 a +2.0
+    """
+    macd   = ind.get("macd")
+    sig    = ind.get("macd_signal")
+    hist   = ind.get("macd_hist")
+    m_p    = ind.get("macd_prev")
+    s_p    = ind.get("macd_sig_prev")
+    h_p    = ind.get("macd_hist_prev")
+    notes, score = [], 0.0
+
+    if None in [macd, sig, hist]:
+        return 0.0, notes
+
+    # MACD vs señal
+    if macd > sig:    score += 0.5; notes.append("MACD > Señal")
+    else:              score -= 0.5
+
+    # MACD vs cero
+    if macd > 0:      score += 0.3; notes.append("MACD > 0")
+    else:              score -= 0.3
+
+    # Histograma: positivo y creciendo es fuerte
+    if hist > 0:
+        score += 0.3
+        if h_p is not None and hist > h_p:
+            score += 0.2; notes.append("Histograma MACD ↑ creciendo")
+    else:
+        score -= 0.3
+        if h_p is not None and hist < h_p:
+            score -= 0.2; notes.append("Histograma MACD ↓ cayendo")
+
+    # Cruce MACD/Señal (el más poderoso)
+    if None not in [m_p, s_p]:
+        if m_p <= s_p and macd > sig:
+            score += 0.8; notes.append("✅ Cruce alcista MACD/Señal")
+        elif m_p >= s_p and macd < sig:
+            score -= 0.8; notes.append("🔻 Cruce bajista MACD/Señal")
+
+    return max(-2.0, min(2.0, score)), notes
+
+
+def _score_bollinger(ind: dict, price: float) -> Tuple[float, list]:
+    """
+    Puntuación Bollinger Bands. Evalúa %B, posición vs media, squeeze.
+    Rango: -2.0 a +2.0
+    """
+    bb_u   = ind.get("bb_upper")
+    bb_l   = ind.get("bb_lower")
+    bb_m   = ind.get("bb_mid")
+    bb_pct = ind.get("bb_pct")
+    bb_w   = ind.get("bb_width")
+    bb_wp  = ind.get("bb_width_prev")
+    notes, score = [], 0.0
+
+    if None in [bb_u, bb_l, bb_m, bb_pct]:
+        return 0.0, notes
+
+    # %B: posición del precio en las bandas
+    if bb_pct < 0.0:
+        score += 1.5; notes.append(f"%B fuera banda inferior ({bb_pct:.2f}) 📈")
+    elif bb_pct < 0.20:
+        score += 1.0; notes.append(f"%B banda baja ({bb_pct:.2f})")
+    elif bb_pct < 0.35:
+        score += 0.4; notes.append(f"%B tercio inferior ({bb_pct:.2f})")
+    elif bb_pct > 1.0:
+        score -= 1.5; notes.append(f"%B fuera banda superior ({bb_pct:.2f}) 📉")
+    elif bb_pct > 0.80:
+        score -= 1.0; notes.append(f"%B banda alta ({bb_pct:.2f})")
+    elif bb_pct > 0.65:
+        score -= 0.4; notes.append(f"%B tercio superior ({bb_pct:.2f})")
+
+    # Precio vs media de BB
+    if price > bb_m:   score += 0.3; notes.append("Precio > BB media")
+    else:               score -= 0.3
+
+    # Squeeze (ancho decreció → expansión próxima, señal neutral de preparación)
+    if bb_w is not None and bb_wp is not None:
+        if bb_w < bb_wp * 0.80:
+            notes.append("⚡ BB Squeeze — expansión próxima")
+
+    return max(-2.0, min(2.0, score)), notes
+
+
+def _score_vwap(ind: dict, price: float) -> Tuple[float, list]:
+    """
+    Puntuación VWAP. Precio > VWAP = sesgo alcista.
+    Rango: -1.0 a +1.0
+    """
+    vwap = ind.get("vwap")
+    notes = []
+
+    if vwap is None:
+        return 0.0, notes
+
+    diff_pct = (price - vwap) / vwap * 100
+
+    if price > vwap:
+        score = min(1.0, 0.4 + abs(diff_pct) * 5)
+        notes.append(f"Precio > VWAP (+{diff_pct:.2f}%)")
+    else:
+        score = max(-1.0, -0.4 - abs(diff_pct) * 5)
+        notes.append(f"Precio < VWAP ({diff_pct:.2f}%)")
+
+    return score, notes
+
+
+def _score_volume(ind: dict) -> Tuple[float, list]:
+    """
+    Puntuación volumen. Alto volumen confirma el movimiento.
+    Rango: -0.5 a +0.5
+    """
+    vol    = ind.get("volume")
+    vol_ma = ind.get("volume_ma")
+    notes  = []
+
+    if None in [vol, vol_ma] or vol_ma == 0:
+        return 0.0, notes
+
+    ratio = vol / vol_ma
+
+    if ratio >= 2.0:
+        notes.append(f"Volumen muy alto ({ratio:.1f}× media) 🔥"); return 0.5, notes
+    elif ratio >= 1.3:
+        notes.append(f"Volumen alto ({ratio:.1f}× media) ✅");      return 0.3, notes
+    elif ratio >= 0.8:
+        notes.append(f"Volumen normal ({ratio:.1f}× media)");        return 0.1, notes
+    else:
+        notes.append(f"Volumen bajo ({ratio:.1f}× media) ⚠");       return -0.3, notes
+
+
+def _score_support_resistance(ind: dict, price: float) -> Tuple[float, list]:
+    """
+    Puntuación S/R. Precio cerca de soporte → alcista; cerca de resistencia → bajista.
+    Rango: -1.5 a +1.5
+    """
+    supports    = ind.get("supports", [])
+    resistances = ind.get("resistances", [])
+    atr         = ind.get("atr") or 1.0
+    notes, score = [], 0.0
+
+    tol_near = atr * 0.5    # Tocando el nivel
+    tol_close = atr * 1.2   # Dentro de 1.2x ATR
+
+    # Verificar soportes (bullish proximity)
+    for sup in supports[:2]:
+        dist = price - sup
+        if dist < 0:               # Precio BAJO el soporte → roto
+            score -= 0.5; notes.append(f"Soporte roto ${sup:.2f} 🔻"); break
+        elif dist <= tol_near:
+            score += 1.5; notes.append(f"Precio en soporte ${sup:.2f} 📈"); break
+        elif dist <= tol_close:
+            score += 0.5; notes.append(f"Cerca de soporte ${sup:.2f}"); break
+
+    # Verificar resistencias (bearish proximity)
+    for res in resistances[:2]:
+        dist = res - price
+        if dist < 0:               # Precio SOBRE la resistencia → rota
+            score += 0.5; notes.append(f"Resistencia rota ${res:.2f} 📈"); break
+        elif dist <= tol_near:
+            score -= 1.5; notes.append(f"Precio en resistencia ${res:.2f} 📉"); break
+        elif dist <= tol_close:
+            score -= 0.5; notes.append(f"Cerca de resistencia ${res:.2f}"); break
+
+    return max(-1.5, min(1.5, score)), notes
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUNCIÓN PRINCIPAL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def generate_signal(
+    price: float,
+    ind_primary: dict,
+    ind_trend: dict,
+    patterns: dict,
+    atr: float
+) -> dict:
+    """
+    Genera la señal de trading combinando todos los análisis.
+
+    Args:
+        price:       Precio actual mid (bid+ask)/2
+        ind_primary: Indicadores del TF primario (M5)
+        ind_trend:   Indicadores del TF de tendencia (M15)
+        patterns:    Resultado de analyze_patterns()
+        atr:         ATR actual en precio
+
+    Returns:
+        {
+          "action"    : "BUY" | "SELL" | "HOLD",
+          "score"     : float,
+          "reasons"   : list[str],
+          "atr"       : float,
+          "trend"     : str,
+          "breakdown" : dict  (puntuación por componente)
+        }
+    """
+    # ── Filtro de volatilidad mínima ──────────────────────────────────────────
+    if atr < ATR_VOLATILITY_MIN:
+        return {
+            "action": "HOLD",
+            "score": 0.0,
+            "reasons": [f"ATR {atr:.3f} < mínimo {ATR_VOLATILITY_MIN} (mercado plano)"],
+            "atr": atr, "trend": "neutral", "breakdown": {}
+        }
+
+    trend = _determine_trend(ind_primary)
+    w = SCORE_WEIGHTS
+
+    # ── Puntuaciones individuales (TF primario) ───────────────────────────────
+    s_ema,  n_ema  = _score_ema(ind_primary, price)
+    s_rsi,  n_rsi  = _score_rsi(ind_primary)
+    s_macd, n_macd = _score_macd(ind_primary)
+    s_bb,   n_bb   = _score_bollinger(ind_primary, price)
+    s_vwap, n_vwap = _score_vwap(ind_primary, price)
+    s_vol,  n_vol  = _score_volume(ind_primary)
+    s_sr,   n_sr   = _score_support_resistance(ind_primary, price)
+
+    # ── Confirmación por TF de tendencia (M15) ────────────────────────────────
+    s_trend_ema, n_trend = _score_ema(ind_trend, price)
+    s_trend_conf = s_trend_ema * w["trend_tf"]
+
+    # ── Puntuación de patrones de velas ───────────────────────────────────────
+    s_pat = patterns.get("score", 0.0)
+    pat_names_bull = patterns.get("bullish", [])
+    pat_names_bear = patterns.get("bearish", [])
+
+    # ── Suma ponderada total ──────────────────────────────────────────────────
+    total = (
+        s_ema   * w["ema"]      +
+        s_rsi   * w["rsi"]      +
+        s_macd  * w["macd"]     +
+        s_pat   * w["patterns"] +
+        s_bb    * w["bb"]       +
+        s_sr    * w["sr"]       +
+        s_vwap  * w["vwap"]     +
+        s_vol   * w["volume"]   +
+        s_trend_conf
+    )
+
+    # ── Consolidar razones ────────────────────────────────────────────────────
+    reasons = [f"Tendencia: {trend.upper()} | Score total: {total:+.2f}"]
+    for note_group in [n_ema, n_rsi, n_macd, n_bb, n_vwap, n_vol, n_sr]:
+        reasons.extend(note_group)
+    if pat_names_bull:
+        reasons.append("🕯 Patrones alcistas: " + ", ".join(pat_names_bull))
+    if pat_names_bear:
+        reasons.append("🕯 Patrones bajistas: " + ", ".join(pat_names_bear))
+
+    # ── Decisión ─────────────────────────────────────────────────────────────
+    if total >= MIN_SIGNAL_SCORE:
+        action = "BUY"
+    elif total <= -MIN_SIGNAL_SCORE:
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    breakdown = {
+        "ema": round(s_ema * w["ema"], 3),
+        "rsi": round(s_rsi * w["rsi"], 3),
+        "macd": round(s_macd * w["macd"], 3),
+        "bollinger": round(s_bb * w["bb"], 3),
+        "patterns": round(s_pat * w["patterns"], 3),
+        "sr": round(s_sr * w["sr"], 3),
+        "vwap": round(s_vwap * w["vwap"], 3),
+        "volume": round(s_vol * w["volume"], 3),
+        "trend_confirm": round(s_trend_conf, 3),
+    }
+
+    logger.info(
+        f"📊 {action:4s} | Score: {total:+6.2f} | "
+        f"EMA:{s_ema*w['ema']:+.2f} RSI:{s_rsi*w['rsi']:+.2f} "
+        f"MACD:{s_macd*w['macd']:+.2f} BB:{s_bb*w['bb']:+.2f} "
+        f"Pat:{s_pat*w['patterns']:+.2f} S/R:{s_sr*w['sr']:+.2f} | "
+        f"Tendencia: {trend} | ATR: {atr:.3f}"
+    )
+
+    return {
+        "action":    action,
+        "score":     round(total, 4),
+        "reasons":   reasons,
+        "atr":       atr,
+        "trend":     trend,
+        "breakdown": breakdown,
+    }
