@@ -22,7 +22,7 @@ Sistema de puntuación ponderada (score máximo ≈ ±12):
 import pandas as pd
 from typing import Tuple
 from logger_config import logger
-from config import RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS
+from config import RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS, REQUIRE_TREND_ALIGNMENT
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -398,6 +398,21 @@ def generate_signal(
         action = "SELL"
     else:
         action = "HOLD"
+
+    # ── Filtro de alineación de tendencia ─────────────────────────────────────
+    # En swing trading solo operamos a favor de la tendencia dominante.
+    # Un BUY en tendencia bajista o SELL en tendencia alcista aumenta el riesgo.
+    if REQUIRE_TREND_ALIGNMENT and action != "HOLD":
+        if trend == "up" and action == "SELL":
+            reasons.append(
+                f"⛔ SELL bloqueado: tendencia H1 alcista — solo BUY permitido"
+            )
+            action = "HOLD"
+        elif trend == "down" and action == "BUY":
+            reasons.append(
+                f"⛔ BUY bloqueado: tendencia H1 bajista — solo SELL permitido"
+            )
+            action = "HOLD"
 
     breakdown = {
         "ema": round(s_ema * w["ema"], 3),

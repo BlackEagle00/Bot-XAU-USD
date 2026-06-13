@@ -30,7 +30,7 @@ from logger_config import logger
 from config import (
     SYMBOL, LOOP_INTERVAL, MAX_OPEN_TRADES,
     MIN_SIGNAL_SCORE, RISK_PER_TRADE,
-    SL_ATR_MULT, TP_ATR_MULT, ATR_VOLATILITY_MIN,
+    SL_ATR_MULT, TP_ATR_MULT, ATR_VOLATILITY_MIN, TF_LABELS,
 )
 from connection import connect, disconnect, is_market_open
 from data_handler import (
@@ -75,14 +75,14 @@ def _handle_exit(sig, frame):
 def _print_banner():
     sep = "═" * 64
     logger.info(sep)
-    logger.info("🤖  XAU/USD Scalping Bot  |  by mt5-python")
+    logger.info("🤖  XAU/USD Swing Trading Bot  |  by mt5-python")
     logger.info(sep)
 
 
 def _print_config(acc):
     """Muestra un resumen de la configuración activa al arrancar."""
     logger.info(
-        f"⚙   Símbolo: {SYMBOL} | TF: M5/M15/H1 | "
+        f"⚙   Símbolo: {SYMBOL} | TF: {TF_LABELS} | "
         f"Score mín: ±{MIN_SIGNAL_SCORE} | "
         f"Riesgo: {RISK_PER_TRADE*100:.0f}%/trade | "
         f"Máx trades: {MAX_OPEN_TRADES}"

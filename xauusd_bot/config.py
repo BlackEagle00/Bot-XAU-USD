@@ -1,8 +1,9 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║        XAU/USD Scalping Bot — Configuración Central         ║
+║       XAU/USD Swing Trading Bot — Configuración Central     ║
 ╚══════════════════════════════════════════════════════════════╝
 Edita este archivo antes de ejecutar el bot.
+Modo: Swing Trading (H1/H4/D1) — operaciones de horas a días.
 """
 import MetaTrader5 as mt5
 
@@ -17,9 +18,10 @@ SYMBOL       = "XAUUSD"    # Puede variar por broker: GOLD, XAUUSD.
 MAGIC_NUMBER = 20250101    # ID único para identificar los trades del bot
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
-PRIMARY_TF   = mt5.TIMEFRAME_M5    # TF principal de scalping (M5)
-TREND_TF     = mt5.TIMEFRAME_M15   # TF de confirmación de tendencia
-HIGHER_TF    = mt5.TIMEFRAME_H1    # Contexto macro
+PRIMARY_TF   = mt5.TIMEFRAME_H1    # TF principal de análisis (H1)
+TREND_TF     = mt5.TIMEFRAME_H4    # TF de confirmación de tendencia (H4)
+HIGHER_TF    = mt5.TIMEFRAME_D1    # Contexto macro diario (D1)
+TF_LABELS    = "H1/H4/D1"         # Etiqueta legible para logs
 
 # ─── PARÁMETROS DE INDICADORES ─────────────────────────────────────────────────
 EMA_FAST     = 9
@@ -37,48 +39,49 @@ MACD_SIGNAL  = 9
 ATR_PERIOD   = 14
 BB_PERIOD    = 20
 BB_STD       = 2.0
-VWAP_PERIOD  = 50          # VWAP rodante en N velas
-SR_LOOKBACK  = 15          # Velas para detectar pivots S/R
-SR_LEVELS    = 5           # Niveles S/R a mantener
+VWAP_PERIOD  = 24          # 24 velas H1 = VWAP rodante de 24 horas
+SR_LOOKBACK  = 20          # Mayor lookback para pivots S/R en H1
+SR_LEVELS    = 7           # Más niveles S/R para análisis swing
+SR_24H_CANDLES = 24        # 24 velas H1 = 24h (rango del día en indicators.py)
 
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
-MAX_OPEN_TRADES     = 3        # Trades simultáneos máximos
-MAX_DAILY_LOSS_PCT  = 0.1     # 10% de pérdida diaria → detener bot
-SL_ATR_MULT         = 1.5      # Stop Loss = SL_ATR_MULT × ATR
-TP_ATR_MULT         = 2.5      # Take Profit = TP_ATR_MULT × ATR
-MIN_RR              = 1.7      # Mínimo Risk/Reward requerido
+MAX_OPEN_TRADES     = 2        # Máximo 2 trades simultáneos (swing = calidad > cantidad)
+MAX_DAILY_LOSS_PCT  = 0.05     # 5% pérdida diaria → detener (más conservador en swing)
+SL_ATR_MULT         = 2.0      # SL más amplio para tolerar movimientos normales de H1
+TP_ATR_MULT         = 4.5      # TP amplio → R:R de 2.25:1
+MIN_RR              = 2.0      # R:R mínimo más exigente en swing
 MIN_LOT             = 0.01     # Lote mínimo absoluto
 MAX_LOT             = 3.0      # Lote máximo absoluto
-BREAKEVEN_ATR_MULT  = 1.5       # Mover SL a BE cuando profit >= X × ATR
-TRAILING_ATR_MULT   = 1.5      # Trailing stop: seguir a precio con X × ATR de distancia
+BREAKEVEN_ATR_MULT  = 1.5      # Mover SL a BE cuando profit >= 1.5×ATR
+TRAILING_ATR_MULT   = 2.5      # Trailing amplio para no cortar tendencias swing
 USE_TRAILING_STOP   = True     # Activar trailing stop
 USE_BREAKEVEN       = True     # Activar break-even automático
-USE_ANTI_DUPLICATE  = False    # Bloquear trades demasiado cercanos a una posición existente
-                               # False = permite acumular posiciones en tendencias fuertes (recomendado)
+USE_ANTI_DUPLICATE  = True     # En swing no acumular: 1 posición por dirección
                                # True  = exige al menos 0.5×ATR de distancia entre entradas
 
 # ─── SEÑALES ───────────────────────────────────────────────────────────────────
-MIN_SIGNAL_SCORE    = 5.5      # Puntuación mínima para abrir trade (máx ≈ ±12)
-ATR_VOLATILITY_MIN  = 0.4      # No operar si ATR < este valor (mercado plano)
+MIN_SIGNAL_SCORE    = 6.5      # Umbral más alto → señales más selectivas y de mayor calidad
+ATR_VOLATILITY_MIN  = 2.0      # ATR H1 de XAUUSD ≈ $8–25; filtrar mercado plano
+REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia H1 (anti-contratendencia)
 SCORE_WEIGHTS = {
-    "ema":      1.0,           # Peso de EMAs en el score total
-    "rsi":      0.9,
-    "macd":     0.9,
-    "patterns": 0.8,
-    "bb":       0.6,
-    "sr":       0.5,
-    "vwap":     0.3,
-    "volume":   0.2,
-    "trend_tf": 0.4,           # Confirmación del TF de tendencia
+    "ema":      1.2,   # Más peso: la alineación EMA es clave para confirmar tendencia swing
+    "rsi":      0.8,   # Menos peso: RSI en H1 es menos preciso para timing exacto
+    "macd":     1.0,   # Más peso: cruces MACD en H1 son señales de alta fiabilidad
+    "patterns": 0.6,   # Menos peso: patrones de vela solos son menos determinantes en H1
+    "bb":       0.5,   # Ligeramente menos relevante
+    "sr":       0.8,   # Más peso: niveles S/R son fundamentales para entradas swing
+    "vwap":     0.2,   # Menos relevante en H1 (VWAP es más herramienta intraday)
+    "volume":   0.3,   # Más peso: el volumen confirma breakouts y continuaciones
+    "trend_tf": 0.6,   # Más peso: la confirmación del H4 es crítica en swing
 }
 
 # ─── DATOS ─────────────────────────────────────────────────────────────────────
-CANDLES_PRIMARY  = 300
-CANDLES_TREND    = 150
-CANDLES_HIGHER   = 100
+CANDLES_PRIMARY  = 500    # 500 velas H1 ≈ 20 días de historia
+CANDLES_TREND    = 200    # 200 velas H4 ≈ 33 días
+CANDLES_HIGHER   = 365    # 365 velas D1 ≈ 1 año de contexto macro
 
 # ─── BOT ───────────────────────────────────────────────────────────────────────
-LOOP_INTERVAL    = 30          # Segundos entre cada ciclo de análisis
-MAX_SLIPPAGE     = 20          # Slippage máximo permitido en puntos
+LOOP_INTERVAL    = 300         # 5 minutos entre ciclos (suficiente para análisis H1)
+MAX_SLIPPAGE     = 30          # Mayor tolerancia al slippage en swing
 LOG_FILE         = "xauusd_bot.log"

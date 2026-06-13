@@ -20,7 +20,7 @@ from typing import Optional
 from logger_config import logger
 from config import (
     SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE,
-    USE_TRAILING_STOP, USE_BREAKEVEN,
+    USE_TRAILING_STOP, USE_BREAKEVEN, USE_ANTI_DUPLICATE,
     BREAKEVEN_ATR_MULT, TRAILING_ATR_MULT,
 )
 from data_handler import get_open_positions, get_tick
@@ -341,10 +341,12 @@ def is_too_close_to_existing(action: str, current_price: float, atr: float) -> b
     Devuelve True si ya hay una posición abierta en la misma dirección
     a menos de 0.5 × ATR del precio actual.
 
-    Evita abrir múltiples trades en el mismo nivel de precio dentro
-    del mismo movimiento. El bot puede tener hasta MAX_OPEN_TRADES trades
-    simultáneos, pero deben estar separados en el tiempo/precio.
+    Cuando USE_ANTI_DUPLICATE = False retorna False directamente (sin filtro).
+    Cuando USE_ANTI_DUPLICATE = True exige al menos 0.5×ATR de distancia.
     """
+    if not USE_ANTI_DUPLICATE:
+        return False
+
     positions    = get_open_positions()
     min_dist     = atr * 0.5
     target_type  = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL

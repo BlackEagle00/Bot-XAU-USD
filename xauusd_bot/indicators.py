@@ -14,7 +14,7 @@ from config import (
     RSI_PERIOD,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL,
     ATR_PERIOD, BB_PERIOD, BB_STD,
-    VWAP_PERIOD, SR_LOOKBACK, SR_LEVELS
+    VWAP_PERIOD, SR_LOOKBACK, SR_LEVELS, SR_24H_CANDLES
 )
 
 
@@ -195,8 +195,8 @@ def get_support_resistance(df: pd.DataFrame,
     all_res = _cluster_levels(p_highs, tolerance)
     all_sup = _cluster_levels(p_lows,  tolerance)
 
-    # 2. Rango de las últimas 24h
-    last_24h = df.tail(288)
+    # 2. Rango de las últimas 24h (SR_24H_CANDLES se ajusta al TF primario)
+    last_24h = df.tail(SR_24H_CANDLES)
     all_res.append(float(last_24h["high"].max()))
     all_sup.append(float(last_24h["low"].min()))
 
