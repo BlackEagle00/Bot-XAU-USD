@@ -100,6 +100,54 @@ def is_market_open() -> bool:
     return spread < max_spread
 
 
+def is_trading_session(swing_mode: bool = False) -> bool:
+    """
+    Verifica si se está dentro de una sesión de alta liquidez para XAU/USD.
+
+    Scalping (swing_mode=False):
+      Opera en cualquier hora del domingo 22:00 al viernes 21:00 UTC.
+      Gold tiene liquidez 24/5 en scalping.
+
+    Swing (swing_mode=True):
+      Solo opera en las sesiones de Londres y Nueva York (máxima liquidez):
+        • Londres:    08:00 – 17:00 UTC
+        • Nueva York: 13:00 – 21:00 UTC
+        • Solape:     13:00 – 17:00 UTC (más volumen)
+      Evita:
+        • Sesión asiática (00:00-07:00 UTC) — spread alto, movimientos erráticos
+        • Viernes después de las 20:00 UTC — riesgo de gap de fin de semana
+        • Sábado y domingo — mercado cerrado
+
+    Returns:
+        True si se puede operar en el modo configurado.
+    """
+    from datetime import datetime, timezone
+    now     = datetime.now(timezone.utc)
+    hour    = now.hour
+    weekday = now.weekday()  # 0=lunes, 4=viernes, 5=sábado, 6=domingo
+
+    # Fin de semana: mercado cerrado para todos los modos
+    if weekday == 5:
+        return False
+    if weekday == 6 and hour < 22:
+        return False
+
+    # Viernes tarde: riesgo de gap de fin de semana (aplica a ambos modos)
+    if weekday == 4 and hour >= 20:
+        return False
+
+    # En scalping: operar cualquier hora hábil
+    if not swing_mode:
+        return True
+
+    # En swing: solo sesiones de alta liquidez (Londres + Nueva York)
+    london_open    = 7 <= hour < 17    # 07:00-17:00 UTC (London)
+    newyork_open   = 13 <= hour < 21   # 13:00-21:00 UTC (New York)
+    active_session = london_open or newyork_open
+
+    return active_session
+
+
 def _retry_wait(attempt: int, retries: int, delay: int):
     if attempt < retries:
         logger.info(f"Reintentando en {delay}s...")

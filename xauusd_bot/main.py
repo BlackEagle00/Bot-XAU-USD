@@ -31,8 +31,9 @@ from config import (
     SYMBOL, LOOP_INTERVAL, MAX_OPEN_TRADES,
     MIN_SIGNAL_SCORE, RISK_PER_TRADE,
     SL_ATR_MULT, TP_ATR_MULT, ATR_VOLATILITY_MIN,
+    SWING_MODE,
 )
-from connection import connect, disconnect, is_market_open
+from connection import connect, disconnect, is_market_open, is_trading_session
 from data_handler import (
     get_market_data, get_tick, get_account_info,
     get_symbol_info, get_open_positions
@@ -45,8 +46,7 @@ from risk_manager import (
     can_open_trade, get_total_daily_pnl
 )
 from trade_manager import (
-    open_trade, close_all_trades,
-    manage_open_trades, is_too_close_to_existing
+    open_trade, close_all_trades, manage_open_trades
 )
 
 
@@ -108,15 +108,18 @@ def _print_config(acc):
 
 def _detect_trend_simple(ind: dict) -> str:
     """
-    Determina la tendencia de fondo con EMA9 vs EMA50.
-    Se usa para contextualizar los patrones de 1 vela (Hammer, Shooting Star…)
+    Determina la tendencia de fondo para contextualizar patrones de 1 vela.
+    Usa claves semánticas (ema_fast / ema_slow) que funcionan en ambos modos:
+      • Scalping: ema_fast=EMA9,  ema_slow=EMA50
+      • Swing:    ema_fast=EMA20, ema_slow=EMA100
     """
-    e9, e50 = ind.get("ema9"), ind.get("ema50")
-    if None in [e9, e50]:
+    e_fast = ind.get("ema_fast")
+    e_slow = ind.get("ema_slow")
+    if None in [e_fast, e_slow]:
         return "neutral"
-    if e9 > e50:
+    if e_fast > e_slow:
         return "up"
-    if e9 < e50:
+    if e_fast < e_slow:
         return "down"
     return "neutral"
 
@@ -137,9 +140,12 @@ def _run_cycle():
             logger.error("No se pudo reconectar. Ciclo omitido.")
             return
 
-    # ── 2. Verificar liquidez del mercado ─────────────────────────────────────
+    # ── 2. Verificar liquidez y sesión de trading ─────────────────────────────
     if not is_market_open():
-        logger.debug("🕐 Mercado cerrado o spread alto. Saltando ciclo.")
+        logger.debug("Mercado cerrado o spread alto. Saltando ciclo.")
+        return
+    if not is_trading_session(swing_mode=SWING_MODE):
+        logger.debug("Fuera de sesión de alta liquidez (modo swing). Saltando ciclo.")
         return
 
     # ── 3. Obtener tick actual ────────────────────────────────────────────────
@@ -183,41 +189,45 @@ def _run_cycle():
 
 
 def _try_open_trade(signal: dict, price: float, tick, atr: float):
+    # Nota: `price` (mid bid/ask) ya no se usa aquí — se mantiene en la firma
+    # por compatibilidad con la llamada en _run_cycle(). El precio de ejecución
+    # real se toma de `tick` (ask para BUY, bid para SELL) más abajo.
     """
     Orquesta la apertura de un trade después de validar todas las condiciones.
 
     Flujo:
-      can_open_trade() → is_too_close_to_existing() → calculate_lot()
-      → calculate_sl_tp() → open_trade()
+      can_open_trade() → calculate_lot() → calculate_sl_tp() → open_trade()
+
+    Sin filtro de proximidad: si el score sigue siendo válido en ciclos
+    consecutivos, el bot abre un trade nuevo en cada ciclo hasta alcanzar
+    MAX_OPEN_TRADES (configurado en config.py). Esto es intencional para
+    aprovechar movimientos sostenidos del mercado.
     """
     global _trades_today
 
     action = signal["action"]
 
     # A. Validar condiciones de riesgo (pérdida diaria, máx trades, margen)
+    #    Este es el ÚNICO límite que controla cuántas posiciones simultáneas
+    #    puede tener el bot — ver MAX_OPEN_TRADES en config.py.
     ok, reason = can_open_trade(action)
     if not ok:
         logger.info(f"🚫 Trade {action} bloqueado: {reason}")
         return
 
-    # B. Anti-duplicado: evita abrir al mismo nivel de precio
-    if is_too_close_to_existing(action, price, atr):
-        logger.info(f"⚠  {action} ignorado: posición existente demasiado cercana.")
-        return
-
-    # C. Precio de ejecución real (ask para BUY, bid para SELL)
+    # B. Precio de ejecución real (ask para BUY, bid para SELL)
     exec_price = tick.ask if action == "BUY" else tick.bid
 
-    # D. Calcular SL y TP
+    # C. Calcular SL y TP
     sl, tp = calculate_sl_tp(action, exec_price, atr, _symbol_info)
 
-    # E. Calcular lote basado en el balance actual
+    # D. Calcular lote basado en el balance actual
     acc = get_account_info()
     if acc is None:
         return
     lot = calculate_lot(acc, _symbol_info, atr)
 
-    # F. Log previo a la ejecución
+    # E. Log previo a la ejecución
     logger.info(
         f"🎯 Señal {action} | Score: {signal['score']:+.2f} | "
         f"Lote: {lot} | Entry: {exec_price:.2f} | "
@@ -236,7 +246,7 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float):
     for reason_text in signal.get("reasons", [])[:5]:
         logger.debug(f"   ↳ {reason_text}")
 
-    # G. Enviar orden a MT5
+    # F. Enviar orden a MT5
     ticket = open_trade(action, sl, tp, lot, _symbol_info,
                         comment=f"s{signal['score']:+.1f}")
     if ticket:

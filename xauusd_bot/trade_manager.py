@@ -355,36 +355,6 @@ def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ANTI-DUPLICADO
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def is_too_close_to_existing(action: str, current_price: float, atr: float) -> bool:
-    """
-    Devuelve True si ya hay una posición abierta en la misma dirección
-    a menos de 0.5 × ATR del precio actual.
-
-    Evita abrir múltiples trades en el mismo nivel de precio dentro
-    del mismo movimiento. El bot puede tener hasta MAX_OPEN_TRADES trades
-    simultáneos, pero deben estar separados en el tiempo/precio.
-    """
-    positions    = get_open_positions()
-    min_dist     = atr * 0.5
-    target_type  = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
-
-    for pos in positions:
-        if pos.type == target_type:
-            dist = abs(pos.price_open - current_price)
-            if dist < min_dist:
-                logger.debug(
-                    f"Anti-dup: {action} bloqueado. #{pos.ticket} abierto en "
-                    f"{pos.price_open:.2f} a solo {dist:.3f} de distancia "
-                    f"(mín {min_dist:.3f})"
-                )
-                return True
-    return False
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # GESTIÓN GLOBAL EN CADA CICLO
 # ═══════════════════════════════════════════════════════════════════════════════
 

@@ -12,10 +12,11 @@ MT5_LOGIN    = 10011299165           # Número de cuenta (0 = usar cuenta activa
 MT5_PASSWORD = "1wZwC!Vw"          # Contraseña de la cuenta
 MT5_SERVER   = "MetaQuotes-Demo"          # Servidor del broker (ej: "ICMarkets-Demo02")
 
+
 # ─── SÍMBOLO ───────────────────────────────────────────────────────────────────
 SYMBOL       = "XAUUSD"    # Puede variar por broker: GOLD, XAUUSD.
 MAGIC_NUMBER = 20250101    # ID único para identificar los trades del bot
-
+ 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
 PRIMARY_TF   = mt5.TIMEFRAME_M5    # TF principal de scalping (M5)
 TREND_TF     = mt5.TIMEFRAME_M15   # TF de confirmación de tendencia
@@ -44,7 +45,7 @@ SR_LEVELS    = 5           # Niveles S/R a mantener
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
 MAX_OPEN_TRADES     = 5        # Trades simultáneos máximos
-MAX_DAILY_LOSS_PCT  = 0.05     # 5% de pérdida diaria → detener bot
+MAX_DAILY_LOSS_PCT  = 0.1      # 10% de pérdida diaria → detener bot
 SL_ATR_MULT         = 1.5      # Stop Loss = SL_ATR_MULT × ATR
 TP_ATR_MULT         = 2.5      # Take Profit = TP_ATR_MULT × ATR
 MIN_RR              = 1.5      # Mínimo Risk/Reward requerido
@@ -61,9 +62,6 @@ ESTIMATED_COMMISSION_USD = 7.0 # Comisión estimada round-trip por lote completo
 TRAILING_ATR_MULT   = 0.8      # Trailing stop: seguir a precio con X × ATR de distancia
 USE_TRAILING_STOP   = True     # Activar trailing stop
 USE_BREAKEVEN       = True     # Activar break-even automático
-USE_ANTI_DUPLICATE  = False    # Bloquear trades demasiado cercanos a una posición existente
-                               # False = permite acumular posiciones en tendencias fuertes (recomendado)
-                               # True  = exige al menos 0.5×ATR de distancia entre entradas
 SWING_MODE          = False    # False = scalping (M5, 30s, sin filtro de sesión)
                                # True  = swing/posicional (H1, 900s, solo Londres+NY)
  
