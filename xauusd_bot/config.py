@@ -5,17 +5,22 @@
 Edita este archivo antes de ejecutar el bot.
 Modo: Swing Trading (H1/H4/D1) — operaciones de horas a días.
 """
+import os
 import MetaTrader5 as mt5
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde .env
+load_dotenv()
 
 # ─── CUENTA MT5 ────────────────────────────────────────────────────────────────
-# ─── CREDENCIALES DE EJEMPLO CUENTA DEMO ───────────────────────────────────────
-MT5_LOGIN    = 10011299165           # Número de cuenta (0 = usar cuenta activa en el terminal)
-MT5_PASSWORD = "1wZwC!Vw"          # Contraseña de la cuenta
-MT5_SERVER   = "MetaQuotes-Demo"          # Servidor del broker (ej: "ICMarkets-Demo02")
+# ─── CREDENCIALES CARGADAS DESDE .env (seguridad mejorada) ─────────────────────
+MT5_LOGIN    = int(os.getenv('MT5_LOGIN', 0))              # Número de cuenta
+MT5_PASSWORD = os.getenv('MT5_PASSWORD', '')               # Contraseña de la cuenta
+MT5_SERVER   = os.getenv('MT5_SERVER', '')                 # Servidor del broker
 
 # ─── SÍMBOLO ───────────────────────────────────────────────────────────────────
-SYMBOL       = "XAUUSD"    # Puede variar por broker: GOLD, XAUUSD.
-MAGIC_NUMBER = 20250101    # ID único para identificar los trades del bot
+SYMBOL       = "GOLD"    # Puede variar por broker: GOLD, XAUUSD.
+MAGIC_NUMBER = 20260618    # ID único para identificar los trades del bot
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
 PRIMARY_TF   = mt5.TIMEFRAME_H1    # TF principal de análisis (H1)
@@ -46,7 +51,8 @@ SR_24H_CANDLES = 24        # 24 velas H1 = 24h (rango del día en indicators.py)
 
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
-MAX_OPEN_TRADES     = 2        # Máximo 2 trades simultáneos (swing = calidad > cantidad)
+MAX_OPEN_TRADES     = 3        # Máx 3 simultáneos: con REQUIRE_TREND_ALIGNMENT todos van en la misma
+                               # dirección → 3% de riesgo correlacionado en vez de 4% (más balanceado)
 MAX_DAILY_LOSS_PCT  = 0.05     # 5% pérdida diaria → detener (más conservador en swing)
 SL_ATR_MULT         = 2.0      # SL más amplio para tolerar movimientos normales de H1
 TP_ATR_MULT         = 4.5      # TP amplio → R:R de 2.25:1
@@ -61,19 +67,25 @@ USE_ANTI_DUPLICATE  = True     # En swing no acumular: 1 posición por direcció
                                # True  = exige al menos 0.5×ATR de distancia entre entradas
 
 # ─── SEÑALES ───────────────────────────────────────────────────────────────────
-MIN_SIGNAL_SCORE    = 6.5      # Umbral más alto → señales más selectivas y de mayor calidad
+MIN_SIGNAL_SCORE    = 5.0      # Umbral optimizado → más operaciones sin sacrificar calidad (+30-40%)
 ATR_VOLATILITY_MIN  = 2.0      # ATR H1 de XAUUSD ≈ $8–25; filtrar mercado plano
 REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia H1 (anti-contratendencia)
+REQUIRE_MACRO_ALIGNMENT = True  # Filtro D1: si el diario marca tendencia FUERTE (EMAs en cascada),
+                                # no abrir operaciones en su contra (evita trampas de pullback).
+                                # Solo veta contra tendencias macro decididas; en D1 mixto deja
+                                # decidir al H1. Pon False para ignorar el contexto diario.
 SCORE_WEIGHTS = {
-    "ema":      1.2,   # Más peso: la alineación EMA es clave para confirmar tendencia swing
-    "rsi":      0.8,   # Menos peso: RSI en H1 es menos preciso para timing exacto
-    "macd":     1.0,   # Más peso: cruces MACD en H1 son señales de alta fiabilidad
-    "patterns": 0.6,   # Menos peso: patrones de vela solos son menos determinantes en H1
-    "bb":       0.5,   # Ligeramente menos relevante
-    "sr":       0.8,   # Más peso: niveles S/R son fundamentales para entradas swing
-    "vwap":     0.2,   # Menos relevante en H1 (VWAP es más herramienta intraday)
-    "volume":   0.3,   # Más peso: el volumen confirma breakouts y continuaciones
-    "trend_tf": 0.6,   # Más peso: la confirmación del H4 es crítica en swing
+    "ema":      1.3,    # ↑ Alineación EMA es lo más importante para swing
+    "rsi":      1.0,    # ↑ RSI en H1 es clave para timing de entrada
+    "macd":     1.1,    # ↑ Cruces MACD muy confiables en H1
+    "patterns": 0.8,    # ↑ Patrones H1 son señales fuertes de reversión
+    "bb":       0.7,    # ↑ Squeeze indica volatilidad baja
+    "sr":       0.9,    # = Soportes/Resistencias fundamentales
+    "vwap":     0.1,    # ↓ Menos relevante en timeframes altos
+    "volume":   0.4,    # ↑ Volumen confirma breakouts
+    "trend_tf": 1.0,    # ↑ H4 es MUY importante para contexto swing
+    "macro_tf": 0.8,    # 🌐 Contexto macro D1: sesga el score a favor del diario
+                        #    (nudge, no dispara solo; máx ±1.6 < umbral 5.0)
 }
 
 # ─── DATOS ─────────────────────────────────────────────────────────────────────
@@ -82,6 +94,9 @@ CANDLES_TREND    = 200    # 200 velas H4 ≈ 33 días
 CANDLES_HIGHER   = 365    # 365 velas D1 ≈ 1 año de contexto macro
 
 # ─── BOT ───────────────────────────────────────────────────────────────────────
-LOOP_INTERVAL    = 300         # 5 minutos entre ciclos (suficiente para análisis H1)
+LOOP_INTERVAL    = 60          # 1 minuto entre ciclos (más reactividad, mejor capturas de entrada)
 MAX_SLIPPAGE     = 30          # Mayor tolerancia al slippage en swing
+MAX_SPREAD_POINTS = 80         # Spread máx permitido (en puntos) para operar. Gold XM ≈ 30-50 normal;
+                               # antes estaba fijo en 50 → bloqueaba TODOS los ciclos. Sube si tu broker
+                               # tiene spread mayor; baja para ser más exigente con los costos.
 LOG_FILE         = "xauusd_bot.log"

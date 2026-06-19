@@ -5,7 +5,7 @@ Maneja inicialización, login, validación de símbolo y reconexión.
 import time
 import MetaTrader5 as mt5
 from logger_config import logger
-from config import MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, SYMBOL
+from config import MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, SYMBOL, MAX_SPREAD_POINTS
 
 
 def connect(retries: int = 3, delay: int = 5) -> bool:
@@ -61,11 +61,16 @@ def _validate_symbol() -> bool:
             logger.error(f"No se pudo activar {SYMBOL}: {mt5.last_error()}")
             return False
 
-    logger.info(
-        f"✅ {SYMBOL} | Dígitos: {info.digits} | Punto: {info.point} "
-        f"| Contrato: {info.trade_contract_size} oz | "
-        f"Tick value: {info.trade_tick_value}"
-    )
+    logger.info(f"✅ Información del símbolo {SYMBOL}:")
+    logger.info(f"   • Dígitos: {info.digits}")
+    logger.info(f"   • Punto: {info.point}")
+    logger.info(f"   • Tamaño contrato: {info.trade_contract_size} oz")
+    logger.info(f"   • Tick size: {info.trade_tick_size}")
+    logger.info(f"   • Tick value: {info.trade_tick_value}")
+    logger.info(f"   • Volumen mín: {info.volume_min}")
+    logger.info(f"   • Volumen step: {info.volume_step}")
+    logger.info(f"   • Volumen máx: {info.volume_max}")
+    logger.info(f"   • Stops level (mín distancia SL/TP): {info.trade_stops_level}")
     return True
 
 
@@ -91,13 +96,18 @@ def is_market_open() -> bool:
     tick = mt5.symbol_info_tick(SYMBOL)
     if tick is None:
         return False
-    spread = (tick.ask - tick.bid)
-    info   = mt5.symbol_info(SYMBOL)
-    if info is None:
+    info = mt5.symbol_info(SYMBOL)
+    if info is None or info.point <= 0:
         return False
-    # Si el spread supera 50 puntos, el mercado puede estar cerrado o ilíquido
-    max_spread = info.point * 50
-    return spread < max_spread
+    # Spread actual en puntos (independiente de la escala del instrumento)
+    spread_points = (tick.ask - tick.bid) / info.point
+    if spread_points >= MAX_SPREAD_POINTS:
+        logger.debug(
+            f"Spread alto: {spread_points:.0f} pts ≥ máx {MAX_SPREAD_POINTS}. "
+            f"Saltando ciclo (ajusta MAX_SPREAD_POINTS si tu broker tiene spread mayor)."
+        )
+        return False
+    return True
 
 
 def _retry_wait(attempt: int, retries: int, delay: int):

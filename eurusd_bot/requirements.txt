@@ -1,0 +1,7 @@
+# XAU/USD Scalping Bot — Dependencias
+# Instalar con: pip install -r requirements.txt
+
+MetaTrader5>=5.0.37      # API oficial de MT5 para Python
+pandas>=1.5.0            # Manejo de DataFrames OHLCV
+numpy>=1.24.0            # Cálculos numéricos de indicadores
+python-dotenv>=1.0.0     # Carga de variables de entorno desde .env (seguridad)

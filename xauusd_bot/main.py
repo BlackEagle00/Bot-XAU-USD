@@ -29,7 +29,7 @@ import MetaTrader5 as mt5
 from logger_config import logger
 from config import (
     SYMBOL, LOOP_INTERVAL, MAX_OPEN_TRADES,
-    MIN_SIGNAL_SCORE, RISK_PER_TRADE,
+    MIN_SIGNAL_SCORE, RISK_PER_TRADE, MIN_RR,
     SL_ATR_MULT, TP_ATR_MULT, ATR_VOLATILITY_MIN, TF_LABELS,
 )
 from connection import connect, disconnect, is_market_open
@@ -41,7 +41,7 @@ from indicators import calculate_all
 from patterns import analyze_patterns
 from signals import generate_signal
 from risk_manager import (
-    calculate_lot, calculate_sl_tp,
+    calculate_lot, calculate_sl_tp, check_risk_reward,
     can_open_trade, get_total_daily_pnl
 )
 from trade_manager import (
@@ -155,8 +155,14 @@ def _run_cycle():
         return
 
     # ── 5. Calcular indicadores ───────────────────────────────────────────────
-    ind_primary = calculate_all(data["primary"], price)  # M5 — análisis principal
-    ind_trend   = calculate_all(data["trend"],   price)  # M15 — confirmación
+    ind_primary = calculate_all(data["primary"], price)  # H1 — análisis principal
+    ind_trend   = calculate_all(data["trend"],   price)  # H4 — confirmación
+    # D1 — contexto macro (sesga el score y veta contra-tendencia macro fuerte).
+    # Puede faltar si el broker no devolvió el D1; en ese caso se omite el filtro.
+    ind_higher  = (
+        calculate_all(data["higher"], price)
+        if data.get("higher") is not None else None
+    )
 
     # ── 6. Filtro de volatilidad (ATR mínimo) ─────────────────────────────────
     atr = ind_primary.get("atr")
@@ -171,7 +177,7 @@ def _run_cycle():
     # ── 8. Detectar patrones de velas + generar señal ─────────────────────────
     trend   = _detect_trend_simple(ind_primary)
     patterns = analyze_patterns(data["primary"], trend)
-    signal  = generate_signal(price, ind_primary, ind_trend, patterns, atr)
+    signal  = generate_signal(price, ind_primary, ind_trend, patterns, atr, ind_higher)
 
     # ── 9. Intentar abrir un nuevo trade si hay señal válida ──────────────────
     if signal["action"] in ("BUY", "SELL"):
@@ -210,6 +216,12 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float):
 
     # D. Calcular SL y TP
     sl, tp = calculate_sl_tp(action, exec_price, atr, _symbol_info)
+
+    # D2. Verificar R:R real (el broker puede deformarlo con su distancia mínima)
+    rr_ok, rr = check_risk_reward(exec_price, sl, tp)
+    if not rr_ok:
+        logger.info(f"🚫 Trade {action} descartado: R:R real {rr:.2f} < mínimo {MIN_RR}")
+        return
 
     # E. Calcular lote basado en el balance actual
     acc = get_account_info()

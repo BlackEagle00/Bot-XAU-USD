@@ -24,7 +24,7 @@ from logger_config import logger
 from config import (
     SYMBOL, MAGIC_NUMBER,
     RISK_PER_TRADE, MAX_OPEN_TRADES, MAX_DAILY_LOSS_PCT,
-    SL_ATR_MULT, TP_ATR_MULT, MIN_LOT, MAX_LOT
+    SL_ATR_MULT, TP_ATR_MULT, MIN_LOT, MAX_LOT, MIN_RR
 )
 from data_handler import get_open_positions, get_account_info
 
@@ -110,6 +110,25 @@ def calculate_sl_tp(action: str, exec_price: float,
             tp = min(tp, round(exec_price - min_dist - buf, digits))
 
     return sl, tp
+
+
+def check_risk_reward(exec_price: float, sl: float, tp: float) -> Tuple[bool, float]:
+    """
+    Verifica que el ratio Riesgo:Beneficio REAL cumpla MIN_RR.
+
+    Aunque SL_ATR_MULT/TP_ATR_MULT fijan un R:R teórico, la distancia mínima
+    que exige el broker (trade_stops_level) puede deformar el SL/TP final y
+    degradar ese ratio. Este guard descarta el trade si el R:R real < MIN_RR.
+
+    Returns:
+        (cumple, rr_real)
+    """
+    risk   = abs(exec_price - sl)
+    reward = abs(tp - exec_price)
+    if risk <= 0:
+        return False, 0.0
+    rr = reward / risk
+    return rr >= MIN_RR, rr
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

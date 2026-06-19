@@ -1,0 +1,47 @@
+# Variables de entorno
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+xauusd_bot.log
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+.Python
+
+# Entorno virtual
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Sistema
+Thumbs.db
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Datos temporales
+*.tmp
+*.temp
+
+.claude

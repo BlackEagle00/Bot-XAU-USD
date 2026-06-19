@@ -13,16 +13,23 @@ Sistema de puntuación ponderada (score máximo ≈ ±12):
 │ Soporte/Resistencia  │ ×0.5  │ -1.5  a +1.5       │
 │ VWAP                 │ ×0.3  │ -1.0  a +1.0       │
 │ Volumen              │ ×0.2  │ -0.5  a +0.5       │
-│ Confirmación TF sup. │ ×0.4  │ (del score EMA)    │
+│ Confirmación TF tend.│ ×1.0  │ (del score EMA H4) │
+│ Contexto macro D1    │ ×0.8  │ -2.0  a +2.0       │
 └──────────────────────┴───────┴───────────────────┘
 
  score ≥ +MIN_SIGNAL_SCORE → BUY
  score ≤ -MIN_SIGNAL_SCORE → SELL
+
+El contexto macro (D1) además actúa como FILTRO: con REQUIRE_MACRO_ALIGNMENT,
+una tendencia diaria FUERTE veta las operaciones en su contra.
 """
 import pandas as pd
 from typing import Tuple
 from logger_config import logger
-from config import RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS, REQUIRE_TREND_ALIGNMENT
+from config import (
+    RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS,
+    REQUIRE_TREND_ALIGNMENT, REQUIRE_MACRO_ALIGNMENT,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -308,6 +315,60 @@ def _score_support_resistance(ind: dict, price: float) -> Tuple[float, list]:
     return max(-1.5, min(1.5, score)), notes
 
 
+def _score_macro(ind: dict, price: float) -> Tuple[float, str, bool, list]:
+    """
+    Contexto macro del timeframe superior (D1 en el Oro).
+
+    Evalúa la tendencia DIARIA con las EMAs para dar un sesgo direccional al
+    score y clasificar la tendencia macro. Sirve a dos propósitos:
+      • Nudge: suma/resta al score total a favor del diario (ponderado por
+        SCORE_WEIGHTS["macro_tf"]). Máx ±2.0 antes de ponderar → no dispara
+        una señal por sí solo, solo inclina la balanza.
+      • Filtro: si `strong` es True (las 4 EMAs diarias en cascada perfecta),
+        generate_signal veta las operaciones contra esa tendencia.
+
+    Returns:
+        (score, trend, strong, notes)
+        score : -2.0 a +2.0  (sesgo macro, antes de ponderar)
+        trend : "up" | "down" | "neutral"
+        strong: True si EMA9>EMA21>EMA50>EMA200 (o el orden inverso)
+        notes : list[str]
+    """
+    e9, e21, e50, e200 = (
+        ind.get("ema9"), ind.get("ema21"),
+        ind.get("ema50"), ind.get("ema200")
+    )
+    notes: list = []
+    if None in [e9, e21, e50, e200]:
+        return 0.0, "neutral", False, notes
+
+    score, trend, strong = 0.0, "neutral", False
+
+    # Alineación de las EMAs diarias
+    if e9 > e21 > e50 > e200:
+        score, trend, strong = 2.0, "up", True
+        notes.append("🌐 D1: tendencia macro ALCISTA fuerte (EMAs en cascada)")
+    elif e9 < e21 < e50 < e200:
+        score, trend, strong = -2.0, "down", True
+        notes.append("🌐 D1: tendencia macro BAJISTA fuerte (EMAs en cascada)")
+    elif e9 > e50:
+        score, trend = 1.0, "up"
+        notes.append("🌐 D1: sesgo macro alcista (parcial)")
+    elif e9 < e50:
+        score, trend = -1.0, "down"
+        notes.append("🌐 D1: sesgo macro bajista (parcial)")
+    else:
+        notes.append("🌐 D1: sin tendencia macro definida")
+
+    # Precio respecto a la EMA200 diaria (la gran divisoria alcista/bajista)
+    if price > e200:
+        score += 0.5; notes.append("🌐 D1: precio sobre EMA200 (zona alcista)")
+    else:
+        score -= 0.5; notes.append("🌐 D1: precio bajo EMA200 (zona bajista)")
+
+    return max(-2.0, min(2.0, score)), trend, strong, notes
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FUNCIÓN PRINCIPAL
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -317,17 +378,20 @@ def generate_signal(
     ind_primary: dict,
     ind_trend: dict,
     patterns: dict,
-    atr: float
+    atr: float,
+    ind_higher: dict = None,
 ) -> dict:
     """
     Genera la señal de trading combinando todos los análisis.
 
     Args:
         price:       Precio actual mid (bid+ask)/2
-        ind_primary: Indicadores del TF primario (M5)
-        ind_trend:   Indicadores del TF de tendencia (M15)
+        ind_primary: Indicadores del TF primario (H1)
+        ind_trend:   Indicadores del TF de tendencia (H4)
         patterns:    Resultado de analyze_patterns()
         atr:         ATR actual en precio
+        ind_higher:  Indicadores del TF macro (D1). Opcional: si es None se
+                     omite el contexto/ filtro macro.
 
     Returns:
         {
@@ -360,9 +424,15 @@ def generate_signal(
     s_vol,  n_vol  = _score_volume(ind_primary)
     s_sr,   n_sr   = _score_support_resistance(ind_primary, price)
 
-    # ── Confirmación por TF de tendencia (M15) ────────────────────────────────
+    # ── Confirmación por TF de tendencia (H4) ─────────────────────────────────
     s_trend_ema, n_trend = _score_ema(ind_trend, price)
     s_trend_conf = s_trend_ema * w["trend_tf"]
+
+    # ── Contexto macro del TF superior (D1) ───────────────────────────────────
+    s_macro_raw, macro_trend, macro_strong, n_macro = 0.0, "neutral", False, []
+    if ind_higher:
+        s_macro_raw, macro_trend, macro_strong, n_macro = _score_macro(ind_higher, price)
+    s_macro = s_macro_raw * w.get("macro_tf", 0.0)
 
     # ── Puntuación de patrones de velas ───────────────────────────────────────
     s_pat = patterns.get("score", 0.0)
@@ -379,12 +449,13 @@ def generate_signal(
         s_sr    * w["sr"]       +
         s_vwap  * w["vwap"]     +
         s_vol   * w["volume"]   +
-        s_trend_conf
+        s_trend_conf            +
+        s_macro
     )
 
     # ── Consolidar razones ────────────────────────────────────────────────────
     reasons = [f"Tendencia: {trend.upper()} | Score total: {total:+.2f}"]
-    for note_group in [n_ema, n_rsi, n_macd, n_bb, n_vwap, n_vol, n_sr]:
+    for note_group in [n_ema, n_rsi, n_macd, n_bb, n_vwap, n_vol, n_sr, n_macro]:
         reasons.extend(note_group)
     if pat_names_bull:
         reasons.append("🕯 Patrones alcistas: " + ", ".join(pat_names_bull))
@@ -414,6 +485,19 @@ def generate_signal(
             )
             action = "HOLD"
 
+    # ── Filtro de contexto macro (D1) ─────────────────────────────────────────
+    # Si el diario marca una tendencia FUERTE (EMAs en cascada), no operamos en
+    # su contra: un BUY contra un D1 bajista fuerte suele ser una trampa alcista
+    # (rebote dentro de tendencia mayor), y viceversa. Solo veta tendencias macro
+    # decididas; en D1 mixto/neutral deja que decida el H1.
+    if REQUIRE_MACRO_ALIGNMENT and action != "HOLD" and macro_strong:
+        if macro_trend == "up" and action == "SELL":
+            reasons.append("⛔ SELL bloqueado: contexto macro D1 ALCISTA fuerte")
+            action = "HOLD"
+        elif macro_trend == "down" and action == "BUY":
+            reasons.append("⛔ BUY bloqueado: contexto macro D1 BAJISTA fuerte")
+            action = "HOLD"
+
     breakdown = {
         "ema": round(s_ema * w["ema"], 3),
         "rsi": round(s_rsi * w["rsi"], 3),
@@ -424,14 +508,16 @@ def generate_signal(
         "vwap": round(s_vwap * w["vwap"], 3),
         "volume": round(s_vol * w["volume"], 3),
         "trend_confirm": round(s_trend_conf, 3),
+        "macro": round(s_macro, 3),
     }
 
     logger.info(
         f"📊 {action:4s} | Score: {total:+6.2f} | "
         f"EMA:{s_ema*w['ema']:+.2f} RSI:{s_rsi*w['rsi']:+.2f} "
         f"MACD:{s_macd*w['macd']:+.2f} BB:{s_bb*w['bb']:+.2f} "
-        f"Pat:{s_pat*w['patterns']:+.2f} S/R:{s_sr*w['sr']:+.2f} | "
-        f"Tendencia: {trend} | ATR: {atr:.3f}"
+        f"Pat:{s_pat*w['patterns']:+.2f} S/R:{s_sr*w['sr']:+.2f} "
+        f"Macro:{s_macro:+.2f} | "
+        f"Tendencia: {trend} | D1: {macro_trend} | ATR: {atr:.3f}"
     )
 
     return {
