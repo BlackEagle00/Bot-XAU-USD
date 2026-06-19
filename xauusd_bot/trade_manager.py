@@ -21,7 +21,8 @@ from logger_config import logger
 from config import (
     SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE,
     USE_TRAILING_STOP, USE_BREAKEVEN,
-    BREAKEVEN_ATR_MULT, TRAILING_ATR_MULT,
+    BREAKEVEN_ATR_MULT, BREAKEVEN_BUFFER_USD,
+    ESTIMATED_COMMISSION_USD, TRAILING_ATR_MULT,
 )
 from data_handler import get_open_positions, get_tick
 
@@ -247,16 +248,35 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
     Lógica:
       • BUY:  si price_current - price_open ≥ trigger → SL = price_open + buf
       • SELL: si price_open - price_current ≥ trigger → SL = price_open - buf
-    
+
+    El buffer (BREAKEVEN_BUFFER_USD en config.py) es un valor FIJO en USD,
+    no calculado automáticamente desde el ATR. Esto es intencional:
+    un buffer proporcional al ATR puede ser demasiado pequeño y no cubrir
+    el spread + comisión del broker, causando que un rebote menor cierre
+    el trade en pérdida aunque el SL esté "por encima/debajo" de la entrada.
+
     Solo actúa si el SL aún está "en pérdida" (por debajo/encima de la entrada).
-    Una vez que el SL está en BE o mejor, no vuelve a moverse con esta función.
+    Una vez que el SL está en BE o mejor, no vuelve a moverse con esta función
+    (el trailing stop se encarga de seguir mejorándolo después).
     """
     if not USE_BREAKEVEN:
         return False
 
     trigger = atr * BREAKEVEN_ATR_MULT
     digits  = symbol_info.digits
-    buf     = symbol_info.point * 5  # +5 puntos sobre la entrada (no exactamente en 0)
+    buf     = BREAKEVEN_BUFFER_USD
+
+    # Advertencia única por posición: si el buffer no cubre la comisión estimada,
+    # el "profit" protegido en realidad podría ser pérdida neta tras costos.
+    contract_size  = getattr(symbol_info, "trade_contract_size", 100)
+    buf_value_usd  = buf * contract_size * pos.volume
+    if buf_value_usd < ESTIMATED_COMMISSION_USD * pos.volume:
+        logger.warning(
+            f"⚠  BREAKEVEN_BUFFER_USD={buf} genera solo ${buf_value_usd:.2f} "
+            f"protegidos en #{pos.ticket}, pero la comisión estimada es "
+            f"${ESTIMATED_COMMISSION_USD * pos.volume:.2f}. Sube BREAKEVEN_BUFFER_USD "
+            f"en config.py para garantizar profit neto real."
+        )
 
     if pos.type == mt5.ORDER_TYPE_BUY:
         if pos.sl >= pos.price_open:   # Ya está en BE o con profit protegido
@@ -267,7 +287,8 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
                 logger.info(
                     f"☑  Break-even BUY #{pos.ticket} | "
-                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f}"
+                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} "
+                    f"(+${buf_value_usd:.2f} protegidos)"
                 )
                 return True
 
@@ -280,7 +301,8 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
                 logger.info(
                     f"☑  Break-even SELL #{pos.ticket} | "
-                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f}"
+                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} "
+                    f"(+${buf_value_usd:.2f} protegidos)"
                 )
                 return True
 
