@@ -45,20 +45,41 @@ SR_LEVELS    = 5           # Niveles S/R a mantener
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
 MAX_OPEN_TRADES     = 5        # Trades simultáneos máximos
-MAX_DAILY_LOSS_PCT  = 0.1      # 10% de pérdida diaria → detener bot
+MAX_DAILY_LOSS_PCT  = 0.05     # 5% de pérdida diaria → detener bot
 SL_ATR_MULT         = 1.5      # Stop Loss = SL_ATR_MULT × ATR
 TP_ATR_MULT         = 2.5      # Take Profit = TP_ATR_MULT × ATR
 MIN_RR              = 1.5      # Mínimo Risk/Reward requerido
 MIN_LOT             = 0.01     # Lote mínimo absoluto
 MAX_LOT             = 5.0      # Lote máximo absoluto
-BREAKEVEN_ATR_MULT  = 1.0      # Mover SL a BE cuando profit >= X × ATR (cuándo activar)
-BREAKEVEN_BUFFER_USD = 0.50    # Margen en USD que se SUMA/RESTA al precio de entrada
-                               # Debe cubrir spread + comisión + slippage del broker.
-                               # Si es muy chico, un rebote rápido puede cerrar en pérdida.
-                               #   Scalping (M5):  0.30 – 0.60 recomendado
-                               #   Swing (H1+):    1.50 – 3.00 recomendado
+BREAKEVEN_MODE      = "pct_tp" # "pct_tp"     → Regla matemática: dispara según % recorrido al TP
+                               # "structure"  → Regla técnica: vela de ruptura + micro-fractal en M1
+BREAKEVEN_TRIGGER_PCT_OF_TP = 0.60
+                               # Mover a BE cuando el profit alcance este % de la distancia
+                               # entre la entrada y el TP de la posición (regla 50-70%).
+                               # 0.60 = espera el 60% del camino antes de proteger capital.
+                               # Usa el TP REAL guardado en la posición (no el ATR actual),
+                               # así el disparo no varía si la volatilidad cambia después de abrir.
+BREAKEVEN_ATR_MULT  = 1.0      # Fallback: solo se usa si la posición no tiene TP definido
+                               # (ej. trade abierto manualmente sin TP)
+BREAKEVEN_BUFFER_USD = 0.50    # "BE+": margen en USD que se SUMA/RESTA al precio de entrada
+                               # para no salir exactamente en 0 — cubre spread + comisión.
+                               # En XAUUSD con cotización a 2 decimales, 1 "pip" = $0.01,
+                               # así que 0.50 equivale a 50 pips de margen.
+                               # Ajusta según el spread+comisión real de tu broker:
+                               #   Spread bajo (ECN):        0.10 – 0.30  (10–30 pips)
+                               #   Spread/comisión estándar: 0.30 – 0.60  (30–60 pips)
+                               #   Swing (H1+):               1.50 – 3.00
 ESTIMATED_COMMISSION_USD = 7.0 # Comisión estimada round-trip por lote completo (ajusta a tu broker)
                                # Se usa para advertir si el buffer no cubre el costo real
+# ── Regla técnica (BREAKEVEN_MODE = "structure") ───────────────────────────────
+MICRO_TF                     = mt5.TIMEFRAME_M1
+                               # Temporalidad usada para detectar velas de ruptura y micro-fractales
+MICRO_FRACTAL_LOOKBACK       = 2
+                               # Velas a cada lado para confirmar un micro-fractal en M1
+                               # (mínimo/máximo rodeado de 2 velas más altas/bajas a cada lado)
+BREAKOUT_CANDLE_BODY_ATR_MULT = 0.4
+                               # Cuerpo mínimo de la vela de confirmación, en múltiplos de ATR(M1)
+                               # Una vela con cuerpo < 0.4×ATR(M1) se considera indecisión, no ruptura
 TRAILING_ATR_MULT   = 0.8      # Trailing stop: seguir a precio con X × ATR de distancia
 USE_TRAILING_STOP   = True     # Activar trailing stop
 USE_BREAKEVEN       = True     # Activar break-even automático

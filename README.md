@@ -160,17 +160,52 @@ Score ≥ +4.5 → **BUY** | Score ≤ −4.5 → **SELL** | Intermedio → **HO
 - **1 señal = 1 trade** en cada ciclo de 30 segundos.
 - Si el mercado sigue favorable en ciclos consecutivos, el bot acumula hasta **5 trades simultáneos**.
 - Cada trade tiene SL, TP y trailing stop **independientes**.
-- No se abren dos trades en el mismo nivel de precio (filtro anti-duplicado).
+- El único límite de cantidad es `MAX_OPEN_TRADES` (no hay filtro de proximidad de precio).
 
 ### Gestión de riesgo automática
 
 | Mecanismo | Comportamiento |
 |---|---|
-| Break-even | Mueve SL a la entrada cuando profit ≥ 1×ATR |
+| Break-even | Dos modos configurables — ver detalle abajo |
 | Trailing stop | SL sigue al precio a 0.8×ATR de distancia |
 | Lote dinámico | Se recalcula en cada trade según balance actual |
 | Límite diario | Bloquea nuevas operaciones si pérdida ≥ 5% del balance |
 | Margen mínimo | No opera si margen libre < 10% del balance |
+
+#### Break-even — modo "pct_tp" (regla matemática, por defecto)
+
+Mueve el SL a break-even cuando el profit alcanza un **% de la distancia al TP real**
+de la posición (no del ATR actual, que puede cambiar después de abrir el trade):
+
+```python
+BREAKEVEN_MODE = "pct_tp"
+BREAKEVEN_TRIGGER_PCT_OF_TP = 0.60   # Espera el 60% del camino al TP
+BREAKEVEN_BUFFER_USD = 0.50          # BE+ : margen para cubrir spread/comisión
+```
+
+Ejemplo: si el TP está a $20 de la entrada, el SL se mueve a break-even
+cuando el precio ya recorrió $12 (60%) a favor.
+
+#### Break-even — modo "structure" (regla técnica)
+
+No usa porcentajes fijos. Solo mueve el SL cuando hay **confirmación real**
+en velas de 1 minuto:
+
+1. **Micro-fractal a favor**: si ya se formó un mínimo más alto (BUY) o
+   máximo más bajo (SELL) que la entrada, ese nivel sirve de "escudo" —
+   el SL se coloca justo debajo/encima de él.
+2. **Vela de ruptura confirmada**: si aún no hay fractal pero ya cerró una
+   vela M1 con cuerpo grande a favor (≥ 0.4×ATR de M1), se usa el
+   break-even clásico (entrada + buffer).
+
+Si ninguna condición se cumple, el SL **no se mueve**, incluso si el precio
+ya está en profit — esto evita reaccionar a rupturas falsas o ruido de 1 minuto.
+
+```python
+BREAKEVEN_MODE = "structure"
+MICRO_FRACTAL_LOOKBACK = 2              # Velas a cada lado para confirmar el fractal
+BREAKOUT_CANDLE_BODY_ATR_MULT = 0.4     # Cuerpo mínimo de la vela de confirmación
+```
 
 ---
 

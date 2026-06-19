@@ -6,8 +6,9 @@ Responsabilidades:
   • Cerrar posiciones por ticket o cerrar todas
   • Modificar SL/TP de posiciones existentes
   • Trailing stop automático (sigue al precio cada ciclo)
-  • Break-even automático (protege capital cuando hay profit ≥ 1×ATR)
-  • Verificar duplicados (no abrir al mismo precio dos veces)
+  • Break-even automático con dos modos configurables:
+      - "pct_tp"     → regla matemática (dispara al alcanzar X% del TP)
+      - "structure"  → regla técnica (vela de ruptura + micro-fractal en M1)
 
 Notas de compatibilidad MT5:
   • filling_mode: bitmask del símbolo (1=FOK, 2=IOC soportados)
@@ -15,16 +16,22 @@ Notas de compatibilidad MT5:
   • Comentarios de orden: MT5 limita a 31 caracteres
 """
 import MetaTrader5 as mt5
+import pandas as pd
+from datetime import datetime
 from typing import Optional
 
 from logger_config import logger
 from config import (
     SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE,
     USE_TRAILING_STOP, USE_BREAKEVEN,
+    BREAKEVEN_MODE, BREAKEVEN_TRIGGER_PCT_OF_TP,
     BREAKEVEN_ATR_MULT, BREAKEVEN_BUFFER_USD,
     ESTIMATED_COMMISSION_USD, TRAILING_ATR_MULT,
+    TP_ATR_MULT, MICRO_TF, MICRO_FRACTAL_LOOKBACK,
+    BREAKOUT_CANDLE_BODY_ATR_MULT,
 )
-from data_handler import get_open_positions, get_tick
+from data_handler import get_open_positions, get_tick, fetch_ohlcv
+from indicators import calc_atr
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -241,35 +248,13 @@ def _modify_sl(ticket: int, new_sl: float, current_tp: float, digits: int) -> bo
 # BREAK-EVEN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def update_breakeven(pos, atr: float, symbol_info) -> bool:
+def _warn_if_buffer_too_small(pos, buf: float) -> float:
     """
-    Mueve el SL a break-even + buffer cuando el profit ≥ BREAKEVEN_ATR_MULT × ATR.
-
-    Lógica:
-      • BUY:  si price_current - price_open ≥ trigger → SL = price_open + buf
-      • SELL: si price_open - price_current ≥ trigger → SL = price_open - buf
-
-    El buffer (BREAKEVEN_BUFFER_USD en config.py) es un valor FIJO en USD,
-    no calculado automáticamente desde el ATR. Esto es intencional:
-    un buffer proporcional al ATR puede ser demasiado pequeño y no cubrir
-    el spread + comisión del broker, causando que un rebote menor cierre
-    el trade en pérdida aunque el SL esté "por encima/debajo" de la entrada.
-
-    Solo actúa si el SL aún está "en pérdida" (por debajo/encima de la entrada).
-    Una vez que el SL está en BE o mejor, no vuelve a moverse con esta función
-    (el trailing stop se encarga de seguir mejorándolo después).
+    Calcula el valor en USD que protege el buffer actual y advierte UNA vez
+    si no alcanza a cubrir la comisión estimada del broker.
+    Returns: buf_value_usd (para incluirlo en el log de confirmación).
     """
-    if not USE_BREAKEVEN:
-        return False
-
-    trigger = atr * BREAKEVEN_ATR_MULT
-    digits  = symbol_info.digits
-    buf     = BREAKEVEN_BUFFER_USD
-
-    # Advertencia única por posición: si el buffer no cubre la comisión estimada,
-    # el "profit" protegido en realidad podría ser pérdida neta tras costos.
-    contract_size  = getattr(symbol_info, "trade_contract_size", 100)
-    buf_value_usd  = buf * contract_size * pos.volume
+    buf_value_usd = buf * 100 * pos.volume  # 100 oz por lote estándar en XAUUSD
     if buf_value_usd < ESTIMATED_COMMISSION_USD * pos.volume:
         logger.warning(
             f"⚠  BREAKEVEN_BUFFER_USD={buf} genera solo ${buf_value_usd:.2f} "
@@ -277,6 +262,52 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
             f"${ESTIMATED_COMMISSION_USD * pos.volume:.2f}. Sube BREAKEVEN_BUFFER_USD "
             f"en config.py para garantizar profit neto real."
         )
+    return buf_value_usd
+
+
+def update_breakeven(pos, atr: float, symbol_info) -> bool:
+    """
+    Despacha al modo de break-even configurado en BREAKEVEN_MODE:
+      • "pct_tp"    → regla matemática: dispara al alcanzar X% de la distancia al TP
+      • "structure" → regla técnica: vela de ruptura confirmada o micro-fractal en M1
+    """
+    if not USE_BREAKEVEN:
+        return False
+
+    if BREAKEVEN_MODE == "structure":
+        return _update_breakeven_structure(pos, symbol_info)
+    return _update_breakeven_pct_tp(pos, atr, symbol_info)
+
+
+def _update_breakeven_pct_tp(pos, atr: float, symbol_info) -> bool:
+    """
+    Regla matemática (50-70%): mueve el SL a break-even + buffer cuando el
+    profit alcanza BREAKEVEN_TRIGGER_PCT_OF_TP de la distancia al TP.
+
+    Usa el TP REAL guardado en la posición (pos.tp), no el ATR actual —
+    así el disparo no cambia si la volatilidad varía después de abrir el trade.
+    Si la posición no tiene TP definido (ej. abierta manualmente), cae al
+    fallback BREAKEVEN_ATR_MULT × ATR actual.
+
+    Lógica:
+      • BUY:  si price_current - price_open ≥ trigger → SL = price_open + buf
+      • SELL: si price_open - price_current ≥ trigger → SL = price_open - buf
+
+    El buffer (BREAKEVEN_BUFFER_USD) es un valor FIJO en USD que cubre
+    spread + comisión, para no salir exactamente en 0 y terminar en pérdida
+    neta tras costos.
+    """
+    digits = symbol_info.digits
+    buf    = BREAKEVEN_BUFFER_USD
+
+    # Distancia al TP real de la posición (más preciso que recalcular con ATR actual)
+    if pos.tp and pos.tp != 0:
+        tp_distance = abs(pos.tp - pos.price_open)
+    else:
+        tp_distance = atr * TP_ATR_MULT  # Fallback si no hay TP definido
+
+    trigger = tp_distance * BREAKEVEN_TRIGGER_PCT_OF_TP
+    buf_value_usd = _warn_if_buffer_too_small(pos, buf)
 
     if pos.type == mt5.ORDER_TYPE_BUY:
         if pos.sl >= pos.price_open:   # Ya está en BE o con profit protegido
@@ -285,10 +316,11 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
         if profit_distance >= trigger:
             new_sl = round(pos.price_open + buf, digits)
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
+                pct_reached = (profit_distance / tp_distance * 100) if tp_distance else 0
                 logger.info(
-                    f"☑  Break-even BUY #{pos.ticket} | "
-                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} "
-                    f"(+${buf_value_usd:.2f} protegidos)"
+                    f"☑  BE (%TP) BUY #{pos.ticket} | SL: {pos.sl:.{digits}f} → "
+                    f"{new_sl:.{digits}f} | {pct_reached:.0f}% del TP recorrido | "
+                    f"+${buf_value_usd:.2f} protegidos"
                 )
                 return True
 
@@ -299,10 +331,152 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
         if profit_distance >= trigger:
             new_sl = round(pos.price_open - buf, digits)
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
+                pct_reached = (profit_distance / tp_distance * 100) if tp_distance else 0
                 logger.info(
-                    f"☑  Break-even SELL #{pos.ticket} | "
-                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} "
-                    f"(+${buf_value_usd:.2f} protegidos)"
+                    f"☑  BE (%TP) SELL #{pos.ticket} | SL: {pos.sl:.{digits}f} → "
+                    f"{new_sl:.{digits}f} | {pct_reached:.0f}% del TP recorrido | "
+                    f"+${buf_value_usd:.2f} protegidos"
+                )
+                return True
+
+    return False
+
+
+# ── Regla técnica: vela de ruptura + micro-fractal ─────────────────────────────
+
+def _detect_micro_fractal(df: pd.DataFrame, lookback: int, kind: str) -> Optional[float]:
+    """
+    Detecta el micro-fractal CONFIRMADO más reciente en el DataFrame.
+
+      kind="low"  → mínimo rodeado de `lookback` velas más altas a cada lado
+                    (fractal alcista: "escudo" para mover el SL en un BUY)
+      kind="high" → máximo rodeado de `lookback` velas más bajas a cada lado
+                    (fractal bajista: "escudo" para mover el SL en un SELL)
+
+    Un fractal solo se considera "confirmado" cuando ya existen `lookback`
+    velas cerradas DESPUÉS de él (si no, podría cambiar / repintarse).
+    Recorre de la vela más reciente confirmable hacia atrás y retorna
+    el primer fractal que encuentra (el más cercano al precio actual).
+    """
+    if len(df) < (2 * lookback + 1):
+        return None
+
+    col = "low" if kind == "low" else "high"
+    # i va desde la última vela con margen de confirmación, hacia atrás
+    for i in range(len(df) - lookback - 1, lookback - 1, -1):
+        window = df[col].iloc[i - lookback: i + lookback + 1]
+        center = df[col].iloc[i]
+        if kind == "low" and center == window.min():
+            return float(center)
+        if kind == "high" and center == window.max():
+            return float(center)
+    return None
+
+
+def _has_breakout_confirmation(df: pd.DataFrame, entry_time: datetime,
+                               direction: str, atr_m1: float) -> bool:
+    """
+    Busca la primera vela M1 cerrada DESPUÉS de la entrada cuyo cuerpo sea
+    ≥ BREAKOUT_CANDLE_BODY_ATR_MULT × ATR(M1) y vaya en la dirección del trade.
+
+    Esto representa la regla: "si la siguiente vela cierra con cuerpo grande
+    a tu favor" — confirma que la ruptura tiene fuerza real, no es ruido.
+    """
+    after_entry = df[df.index > entry_time]
+    if after_entry.empty:
+        return False
+
+    min_body = atr_m1 * BREAKOUT_CANDLE_BODY_ATR_MULT
+    for _, c in after_entry.iterrows():
+        body = abs(c["close"] - c["open"])
+        if body < min_body:
+            continue
+        if direction == "BUY" and c["close"] > c["open"]:
+            return True
+        if direction == "SELL" and c["close"] < c["open"]:
+            return True
+    return False
+
+
+def _update_breakeven_structure(pos, symbol_info) -> bool:
+    """
+    Regla técnica: mueve el SL a break-even solo cuando hay confirmación
+    estructural en M1, no por un porcentaje fijo de profit.
+
+    Prioridad de la señal de protección:
+      1. Micro-fractal a favor: si ya se formó un mínimo más alto (BUY) o
+         máximo más bajo (SELL) que la entrada, ese nivel actúa como "escudo"
+         — el SL se coloca justo debajo/encima de él (no en la entrada exacta).
+      2. Vela de ruptura confirmada: si no hay fractal aún pero ya cerró una
+         vela M1 con cuerpo grande a favor, se usa el break-even clásico
+         (entrada + buffer).
+
+    Si ninguna de las dos condiciones se cumple, el SL no se mueve —
+    incluso si el precio ya está en profit. Esto evita mover el SL por
+    rupturas falsas o ruido de 1 minuto.
+    """
+    direction = "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL"
+    digits    = symbol_info.digits
+    buf       = BREAKEVEN_BUFFER_USD
+
+    # Ya protegido — nada que hacer (el trailing stop sigue desde aquí)
+    if direction == "BUY" and pos.sl >= pos.price_open:
+        return False
+    if direction == "SELL" and pos.sl <= pos.price_open:
+        return False
+
+    # Velas M1 suficientes para detectar fractales + confirmar ruptura
+    df = fetch_ohlcv(SYMBOL, MICRO_TF, 60)
+    if df is None or len(df) < (2 * MICRO_FRACTAL_LOOKBACK + 5):
+        return False
+
+    atr_m1_series = calc_atr(df["high"], df["low"], df["close"])
+    if atr_m1_series.empty or pd.isna(atr_m1_series.iloc[-1]):
+        return False
+    atr_m1 = float(atr_m1_series.iloc[-1])
+
+    entry_time   = datetime.utcfromtimestamp(pos.time)
+    fractal_kind = "low" if direction == "BUY" else "high"
+    fractal      = _detect_micro_fractal(df, MICRO_FRACTAL_LOOKBACK, fractal_kind)
+    breakout_ok  = _has_breakout_confirmation(df, entry_time, direction, atr_m1)
+
+    candidate_sl, source = None, ""
+
+    if direction == "BUY":
+        if fractal is not None and fractal > pos.price_open:
+            candidate_sl = fractal - buf * 0.3   # Un poco por debajo del fractal
+            source = f"micro-fractal alcista ${fractal:.2f}"
+        elif breakout_ok:
+            candidate_sl = pos.price_open + buf
+            source = "vela de ruptura confirmada (M1)"
+
+        if candidate_sl is not None and candidate_sl > pos.price_open:
+            new_sl = round(candidate_sl, digits)
+            buf_value_usd = _warn_if_buffer_too_small(pos, candidate_sl - pos.price_open)
+            if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
+                logger.info(
+                    f"☑  BE (estructura) BUY #{pos.ticket} | "
+                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} | "
+                    f"origen: {source} | +${buf_value_usd:.2f} protegidos"
+                )
+                return True
+
+    else:  # SELL
+        if fractal is not None and fractal < pos.price_open:
+            candidate_sl = fractal + buf * 0.3   # Un poco por encima del fractal
+            source = f"micro-fractal bajista ${fractal:.2f}"
+        elif breakout_ok:
+            candidate_sl = pos.price_open - buf
+            source = "vela de ruptura confirmada (M1)"
+
+        if candidate_sl is not None and candidate_sl < pos.price_open:
+            new_sl = round(candidate_sl, digits)
+            buf_value_usd = _warn_if_buffer_too_small(pos, pos.price_open - candidate_sl)
+            if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
+                logger.info(
+                    f"☑  BE (estructura) SELL #{pos.ticket} | "
+                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} | "
+                    f"origen: {source} | +${buf_value_usd:.2f} protegidos"
                 )
                 return True
 
