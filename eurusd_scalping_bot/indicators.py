@@ -15,7 +15,8 @@ from config import (
     MACD_FAST, MACD_SLOW, MACD_SIGNAL,
     ATR_PERIOD, BB_PERIOD, BB_STD,
     VWAP_PERIOD, SR_LOOKBACK, SR_LEVELS, SR_24H_CANDLES,
-    SR_CLUSTER_ATR_MULT, PSYCH_LEVEL_STEP
+    SR_CLUSTER_ATR_MULT, PSYCH_LEVEL_STEP,
+    ADX_PERIOD,
 )
 
 
@@ -86,6 +87,35 @@ def calc_atr(high: pd.Series, low: pd.Series, close: pd.Series,
     tr3 = (low  - close.shift(1)).abs()
     tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return tr.ewm(com=period - 1, min_periods=period).mean()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADX — Average Directional Index (fuerza de la tendencia)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def calc_adx(high: pd.Series, low: pd.Series, close: pd.Series,
+             period: int = ADX_PERIOD) -> pd.Series:
+    """
+    ADX (Average Directional Index) — mide la FUERZA de la tendencia, no su dirección.
+      • ADX > ~25  → tendencia fuerte (seguir tendencia tiene sentido)
+      • ADX < ~20  → mercado lateral / chop (los cruces son ruido)
+    Suavizado de Wilder (igual estilo que ATR/RSI del resto del módulo).
+    """
+    up_move   = high.diff()
+    down_move = -low.diff()
+    plus_dm   = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm  = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low  - close.shift(1)).abs()
+    tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr_w    = tr.ewm(com=period - 1, min_periods=period).mean()
+    plus_di  = 100 * plus_dm.ewm(com=period - 1, min_periods=period).mean() / atr_w
+    minus_di = 100 * minus_dm.ewm(com=period - 1, min_periods=period).mean() / atr_w
+    dx       = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return dx.ewm(com=period - 1, min_periods=period).mean()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -257,6 +287,9 @@ def calculate_all(df: pd.DataFrame, current_price: float) -> dict:
     # — ATR —
     atr = calc_atr(h, lo, c)
 
+    # — ADX (fuerza de tendencia) —
+    adx = calc_adx(h, lo, c)
+
     # — Bollinger —
     bb_u, bb_m, bb_l = calc_bollinger(c)
     bb_pct   = calc_bb_percent(c, bb_u, bb_l)
@@ -303,6 +336,9 @@ def calculate_all(df: pd.DataFrame, current_price: float) -> dict:
         "macd_hist_prev":_val(macd_hist, 1),
         # ATR
         "atr":           _val(atr),
+        # ADX (fuerza de tendencia)
+        "adx":           _val(adx),
+        "adx_prev":      _val(adx, 1),
         # Bollinger
         "bb_upper":      _val(bb_u),
         "bb_mid":        _val(bb_m),

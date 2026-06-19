@@ -22,7 +22,7 @@ Sistema de puntuación ponderada (score máximo ≈ ±12):
 import pandas as pd
 from typing import Tuple
 from logger_config import logger
-from config import RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS, REQUIRE_TREND_ALIGNMENT
+from config import RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS, REQUIRE_TREND_ALIGNMENT, RSI_NO_SELL_BELOW, RSI_NO_BUY_ABOVE, USE_ADX_FILTER, ADX_MIN_TREND, INTERMARKET_INVERSE
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -308,6 +308,48 @@ def _score_support_resistance(ind: dict, price: float) -> Tuple[float, list]:
     return max(-1.5, min(1.5, score)), notes
 
 
+def _score_orderflow(delta) -> Tuple[float, list]:
+    """
+    Presión compradora/vendedora por ticks (proxy del "volumen de compra").
+    delta ∈ [-1, 1]: +1 = solo compras, -1 = solo ventas. Confirma la dirección.
+    Rango: -1.0 a +1.0
+    """
+    notes = []
+    if delta is None:
+        return 0.0, notes
+    score = max(-1.0, min(1.0, float(delta)))
+    if delta >= 0.15:
+        notes.append(f"Order-flow comprador ({delta:+.2f}) 🟢")
+    elif delta <= -0.15:
+        notes.append(f"Order-flow vendedor ({delta:+.2f}) 🔴")
+    else:
+        notes.append(f"Order-flow neutro ({delta:+.2f})")
+    return score, notes
+
+
+def _score_intermarket(bias, inverse: bool) -> Tuple[float, list]:
+    """
+    Sesgo inter-mercado según el índice dólar (DXY).
+    `bias` = (trend, strong) con trend ∈ {"up","down","neutral"}, o None.
+    Con inverse=True (oro/EUR), un dólar BAJISTA es alcista para el activo.
+    Rango: -1.5 a +1.5
+    """
+    notes = []
+    if not bias:
+        return 0.0, notes
+    trend, strong = bias
+    if trend == "neutral":
+        notes.append("🌐 Inter-mercado (DXY) sin dirección")
+        return 0.0, notes
+
+    mag     = 1.5 if strong else 0.8
+    dxy_dir = 1.0 if trend == "up" else -1.0
+    score   = (-dxy_dir if inverse else dxy_dir) * mag
+    sesgo   = "alcista" if score > 0 else "bajista"
+    notes.append(f"🌐 DXY {trend} → sesgo {sesgo} para el activo ({score:+.1f})")
+    return score, notes
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FUNCIÓN PRINCIPAL
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -317,7 +359,9 @@ def generate_signal(
     ind_primary: dict,
     ind_trend: dict,
     patterns: dict,
-    atr: float
+    atr: float,
+    orderflow: float = None,
+    intermarket: tuple = None,
 ) -> dict:
     """
     Genera la señal de trading combinando todos los análisis.
@@ -364,6 +408,12 @@ def generate_signal(
     s_trend_ema, n_trend = _score_ema(ind_trend, price)
     s_trend_conf = s_trend_ema * w["trend_tf"]
 
+    # ── Order-flow (presión compradora/vendedora por ticks) ───────────────────
+    s_of, n_of = _score_orderflow(orderflow)
+
+    # ── Inter-mercado (sesgo DXY, inverso para oro/EUR) ───────────────────────
+    s_im, n_im = _score_intermarket(intermarket, INTERMARKET_INVERSE)
+
     # ── Puntuación de patrones de velas ───────────────────────────────────────
     s_pat = patterns.get("score", 0.0)
     pat_names_bull = patterns.get("bullish", [])
@@ -379,12 +429,14 @@ def generate_signal(
         s_sr    * w["sr"]       +
         s_vwap  * w["vwap"]     +
         s_vol   * w["volume"]   +
-        s_trend_conf
+        s_trend_conf            +
+        s_of * w.get("orderflow", 0.0)   +
+        s_im * w.get("intermarket", 0.0)
     )
 
     # ── Consolidar razones ────────────────────────────────────────────────────
     reasons = [f"Tendencia: {trend.upper()} | Score total: {total:+.2f}"]
-    for note_group in [n_ema, n_rsi, n_macd, n_bb, n_vwap, n_vol, n_sr]:
+    for note_group in [n_ema, n_rsi, n_macd, n_bb, n_vwap, n_vol, n_sr, n_of, n_im]:
         reasons.extend(note_group)
     if pat_names_bull:
         reasons.append("🕯 Patrones alcistas: " + ", ".join(pat_names_bull))
@@ -414,6 +466,35 @@ def generate_signal(
             )
             action = "HOLD"
 
+    # ── Filtro anti-agotamiento (extremos de RSI) ─────────────────────────────
+    # No abrir NUEVAS entradas donde el movimiento suele agotarse y revertir:
+    # vender con RSI sobrevendido = "vender en el suelo"; comprar con RSI
+    # sobrecomprado = "comprar en el techo".
+    rsi_now = ind_primary.get("rsi")
+    if rsi_now is not None and action != "HOLD":
+        if action == "SELL" and rsi_now <= RSI_NO_SELL_BELOW:
+            reasons.append(
+                f"⛔ SELL bloqueado: RSI {rsi_now:.0f} sobrevendido (posible suelo, no vender el fondo)"
+            )
+            action = "HOLD"
+        elif action == "BUY" and rsi_now >= RSI_NO_BUY_ABOVE:
+            reasons.append(
+                f"⛔ BUY bloqueado: RSI {rsi_now:.0f} sobrecomprado (posible techo, no comprar el techo)"
+            )
+            action = "HOLD"
+
+    # ── Filtro ADX (fuerza de tendencia) ──────────────────────────────────────
+    # El bot es seguidor de tendencia: en mercado lateral (ADX bajo) los cruces son
+    # ruido y suelen terminar en SL. Si la tendencia no tiene fuerza, no abrimos.
+    adx_now = ind_primary.get("adx")
+    if USE_ADX_FILTER and adx_now is not None and action != "HOLD":
+        if adx_now < ADX_MIN_TREND:
+            reasons.append(
+                f"⛔ {action} bloqueado: ADX {adx_now:.0f} < {ADX_MIN_TREND} "
+                f"(mercado lateral, tendencia sin fuerza)"
+            )
+            action = "HOLD"
+
     breakdown = {
         "ema": round(s_ema * w["ema"], 3),
         "rsi": round(s_rsi * w["rsi"], 3),
@@ -424,13 +505,17 @@ def generate_signal(
         "vwap": round(s_vwap * w["vwap"], 3),
         "volume": round(s_vol * w["volume"], 3),
         "trend_confirm": round(s_trend_conf, 3),
+        "orderflow": round(s_of * w.get("orderflow", 0.0), 3),
+        "intermarket": round(s_im * w.get("intermarket", 0.0), 3),
     }
 
     logger.info(
         f"📊 {action:4s} | Score: {total:+6.2f} | "
         f"EMA:{s_ema*w['ema']:+.2f} RSI:{s_rsi*w['rsi']:+.2f} "
         f"MACD:{s_macd*w['macd']:+.2f} BB:{s_bb*w['bb']:+.2f} "
-        f"Pat:{s_pat*w['patterns']:+.2f} S/R:{s_sr*w['sr']:+.2f} | "
+        f"Pat:{s_pat*w['patterns']:+.2f} S/R:{s_sr*w['sr']:+.2f} "
+        f"OF:{s_of*w.get('orderflow',0.0):+.2f} IM:{s_im*w.get('intermarket',0.0):+.2f} | "
+        f"ADX:{(adx_now if adx_now is not None else 0):.0f} | "
         f"Tendencia: {trend} | ATR: {atr:.3f}"
     )
 

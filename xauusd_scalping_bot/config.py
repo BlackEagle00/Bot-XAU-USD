@@ -69,12 +69,34 @@ TP_ATR_MULT         = 3.0      # TP = 3.0×ATR → R:R teórico 2.0:1
 MIN_RR              = 1.8      # R:R real mínimo (permite leve deformación del broker)
 MIN_LOT             = 0.01     # Lote mínimo absoluto
 MAX_LOT             = 3.0      # Lote máximo absoluto
-BREAKEVEN_ATR_MULT  = 1.0      # Mover SL a BE rápido (proteger capital antes en scalping)
+BREAKEVEN_ATR_MULT  = 1.0      # (FALLBACK) Solo se usa si la posición NO tiene TP definido.
+BE_TRIGGER_PCT      = 0.55     # Mover a BE+ cuando el precio recorra ≥ 55% del camino entrada→TP
+                               # (regla 50-70%, calza bien en scalping). Baja para proteger antes.
+BE_PLUS_POINTS      = 5        # "BE+": margen EXTRA (puntos) además del spread. SL queda en:
+                               #   entrada ∓ (spread_actual + BE_PLUS_POINTS×point) → sale en positivo.
 TRAILING_ATR_MULT   = 1.0      # Trailing ajustado: sigue de cerca al precio
 USE_TRAILING_STOP   = True     # Activar trailing stop
 USE_BREAKEVEN       = True     # Activar break-even automático
-USE_ANTI_DUPLICATE  = True     # No acumular en el mismo nivel de precio
-                               # True  = exige al menos 0.5×ATR de distancia entre entradas
+USE_ANTI_DUPLICATE  = True     # Exige separación mínima entre entradas de la misma dirección
+ANTI_DUP_ATR_MULT   = 0.75     # Distancia mínima (en ATR) entre entradas misma dirección. Antes 0.5
+                               # fijo → apilaba demasiado en una caída. 0.75 separa más sin frenar
+                               # tanto el ritmo del scalping. Sube a 1.0+ para separar aún más.
+
+# ─── TRAILING PROGRESIVO (lock de ganancia) ────────────────────────────────────
+# El trailing clásico (TRAILING_ATR_MULT) deja "respirar" al precio, pero cuando el
+# trade ya va muy en ganancia devuelve demasiado en un retroceso: el SL queda lejos
+# del precio y un "back" puede borrar casi todo el profit. El lock PROGRESIVO mueve
+# el SL detrás del precio asegurando una FRACCIÓN CRECIENTE del profit abierto:
+# arranca flojo (deja correr la tendencia) y se aprieta hacia ~1:1 conforme el trade
+# avanza, para que un retroceso salga en POSITIVO en vez de en pérdida.
+# En cada ciclo el trailing aplica el SL MÁS protector entre el ATR clásico y este lock.
+USE_PROGRESSIVE_TRAIL = True    # Activar el lock progresivo de ganancia
+TRAIL_LOCK_START_ATR  = 1.0     # Empezar a asegurar profit cuando éste supere 1.0×ATR (≈ 1/3 del TP)
+TRAIL_LOCK_PCT_MIN    = 0.40    # Al arrancar asegura el 40% del profit (scalping → protege más rápido)
+TRAIL_LOCK_PCT_MAX    = 0.90    # Tope: asegura hasta el 90% del profit (≈ 1:1) en trades maduros
+TRAIL_LOCK_FULL_ATR   = 2.7     # Llega al MAX cuando el profit alcanza 2.7×ATR (≈ justo antes del TP 3.0×ATR).
+                                # La fracción sube linealmente de _MIN a _MAX entre START y FULL.
+                                # ¿Asegurar aún más rápido? Baja START y/o sube PCT_MIN.
 
 # ─── SEÑALES ───────────────────────────────────────────────────────────────────
 MIN_SIGNAL_SCORE    = 5.5      # Umbral algo más alto: M5 genera más ruido, hay que filtrar más
@@ -84,6 +106,10 @@ REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia M5 (anti-c
 REQUIRE_MACRO_ALIGNMENT = False # En scalping NO vetamos por H1 (mataría demasiadas entradas).
                                 # El H1 entra solo como SESGO suave del score (macro_tf), no como veto.
                                 # Pon True si quieres que el H1 fuerte bloquee scalps en su contra.
+# Anti-agotamiento: no abrir NUEVAS entradas en extremos de RSI (vender el suelo /
+# comprar el techo), donde el movimiento suele agotarse y revertir.
+RSI_NO_SELL_BELOW   = 30      # No abrir SELL si el RSI M5 ≤ 30 (sobrevendido → posible suelo)
+RSI_NO_BUY_ABOVE    = 70      # No abrir BUY  si el RSI M5 ≥ 70 (sobrecomprado → posible techo)
 SCORE_WEIGHTS = {
     "ema":      1.3,    # ↑ Alineación EMA sigue siendo lo más importante
     "rsi":      1.0,    # ↑ RSI en M5 es clave para timing de entrada
@@ -95,7 +121,41 @@ SCORE_WEIGHTS = {
     "volume":   0.4,    # ↑ Volumen confirma breakouts
     "trend_tf": 0.8,    # M15 confirma, pero pesa algo menos que en swing
     "macro_tf": 0.5,    # 🌐 Contexto H1: sesgo top-down suave (máx ±1.0, no dispara solo)
+    "orderflow":   0.8, # 🟢 Presión compradora/vendedora por ticks (scalp: más peso)
+    "intermarket": 0.4, # 🌐 Sesgo del índice dólar DXY (inverso; menos peso en scalp)
 }
+
+# ─── ADX — FILTRO DE FUERZA DE TENDENCIA ───────────────────────────────────────
+# En mercado lateral (ADX bajo) los cruces son ruido; si ADX < umbral, no abrir.
+USE_ADX_FILTER  = True
+ADX_PERIOD      = 14
+ADX_MIN_TREND   = 18      # scalping M5 es más ruidoso → umbral algo más bajo que swing.
+
+# ─── ORDER-FLOW — PRESIÓN COMPRADORA/VENDEDORA POR TICKS ────────────────────────
+# Proxy del "volumen de compra vs venta" con ticks recientes (en CFDs no hay volumen
+# real): delta = (compras - ventas)/(compras+ventas) ∈ [-1,1]. Nudge al score.
+USE_ORDERFLOW           = True
+ORDERFLOW_LOOKBACK_SECS = 120     # ventana de ticks (scalping: 2 min, más reactivo)
+ORDERFLOW_MIN_TICKS     = 50
+
+# ─── INTER-MERCADO — ÍNDICE DÓLAR (DXY) ─────────────────────────────────────────
+# El oro es INVERSO al dólar. ⚠ Verifica el símbolo del índice dólar en tu broker;
+#    XM suele usar "USDX". Si no existe, el factor se desactiva solo (sin error).
+USE_INTERMARKET     = True
+INTERMARKET_SYMBOL  = "USDX"
+INTERMARKET_INVERSE = True
+INTERMARKET_TF      = mt5.TIMEFRAME_H1   # TF del DXY (scalping: H1)
+INTERMARKET_CANDLES = 200
+
+# ─── FILTRO DE NOTICIAS — CALENDARIO ECONÓMICO ──────────────────────────────────
+# Bloquea abrir trades alrededor de eventos de alto impacto (NFP, CPI, FOMC...).
+# JSON semanal gratuito de ForexFactory; si no hay internet, NO bloquea (fail-open).
+USE_NEWS_FILTER          = True
+NEWS_CURRENCIES          = ["USD"]       # divisas que afectan al oro
+NEWS_IMPACTS             = ["High"]
+NEWS_BLACKOUT_BEFORE_MIN = 15            # scalping: ventana más corta
+NEWS_BLACKOUT_AFTER_MIN  = 15
+NEWS_FAIL_OPEN           = True
 
 # ─── DATOS ─────────────────────────────────────────────────────────────────────
 CANDLES_PRIMARY  = 1500   # 1500 velas M5 ≈ 5.2 días (suficiente para EMA200 estable)

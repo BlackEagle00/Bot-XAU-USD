@@ -6,7 +6,9 @@ Responsabilidades:
   • Cerrar posiciones por ticket o cerrar todas
   • Modificar SL/TP de posiciones existentes
   • Trailing stop automático (sigue al precio cada ciclo)
-  • Break-even automático (protege capital cuando hay profit ≥ 1×ATR)
+  • Break-even "BE+" automático: cuando el precio recorre ≥ BE_TRIGGER_PCT del
+    camino al TP, mueve el SL a la entrada + un margen que cubre el spread
+    (para salir en cero/positivo si el precio se devuelve).
   • Verificar duplicados (no abrir al mismo precio dos veces)
 
 Notas de compatibilidad MT5:
@@ -22,6 +24,10 @@ from config import (
     SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE,
     USE_TRAILING_STOP, USE_BREAKEVEN, USE_ANTI_DUPLICATE,
     BREAKEVEN_ATR_MULT, TRAILING_ATR_MULT,
+    BE_TRIGGER_PCT, BE_PLUS_POINTS,
+    ANTI_DUP_ATR_MULT,
+    USE_PROGRESSIVE_TRAIL, TRAIL_LOCK_START_ATR,
+    TRAIL_LOCK_PCT_MIN, TRAIL_LOCK_PCT_MAX, TRAIL_LOCK_FULL_ATR,
 )
 from data_handler import get_open_positions, get_tick
 
@@ -242,32 +248,47 @@ def _modify_sl(ticket: int, new_sl: float, current_tp: float, digits: int) -> bo
 
 def update_breakeven(pos, atr: float, symbol_info) -> bool:
     """
-    Mueve el SL a break-even + buffer cuando el profit ≥ BREAKEVEN_ATR_MULT × ATR.
+    Mueve el SL a "BE+" (entrada + margen que cubre el spread) cuando el precio
+    ya recorrió al menos BE_TRIGGER_PCT del camino hacia el TP (regla 50-70%).
 
-    Lógica:
-      • BUY:  si price_current - price_open ≥ trigger → SL = price_open + buf
-      • SELL: si price_open - price_current ≥ trigger → SL = price_open - buf
-    
-    Solo actúa si el SL aún está "en pérdida" (por debajo/encima de la entrada).
-    Una vez que el SL está en BE o mejor, no vuelve a moverse con esta función.
+    Disparo:
+      • Con TP definido: profit ≥ BE_TRIGGER_PCT × distancia(entrada → TP).
+      • Sin TP (fallback): profit ≥ BREAKEVEN_ATR_MULT × ATR.
+
+    Colocación BE+ (no en la entrada exacta, para salir realmente en cero/positivo):
+      • margen = spread_actual + BE_PLUS_POINTS × point
+      • BUY:  SL = price_open + margen
+      • SELL: SL = price_open - margen
+
+    Solo actúa una vez (mientras el SL siga del lado perdedor de la entrada).
+    El trailing stop se encarga de seguir asegurando ganancia a partir de ahí.
     """
     if not USE_BREAKEVEN:
         return False
 
-    trigger = atr * BREAKEVEN_ATR_MULT
-    digits  = symbol_info.digits
-    buf     = symbol_info.point * 5  # +5 puntos sobre la entrada (no exactamente en 0)
+    digits = symbol_info.digits
+    point  = symbol_info.point
+
+    # Margen BE+ : cubre el spread vivo + un extra configurable a tu favor
+    tick      = get_tick()
+    spread    = (tick.ask - tick.bid) if tick is not None else 0.0
+    be_offset = spread + BE_PLUS_POINTS * point
+
+    # Disparo por % del recorrido hacia el TP (fallback a ATR si la posición no tiene TP)
+    tp_distance = abs(pos.tp - pos.price_open) if pos.tp else 0.0
+    trigger = tp_distance * BE_TRIGGER_PCT if tp_distance > 0 else atr * BREAKEVEN_ATR_MULT
 
     if pos.type == mt5.ORDER_TYPE_BUY:
-        if pos.sl >= pos.price_open:   # Ya está en BE o con profit protegido
+        if pos.sl >= pos.price_open:   # Ya está en BE+ o con profit protegido
             return False
         profit_distance = pos.price_current - pos.price_open
         if profit_distance >= trigger:
-            new_sl = round(pos.price_open + buf, digits)
-            if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
+            new_sl = round(pos.price_open + be_offset, digits)
+            if new_sl < pos.price_current and _modify_sl(pos.ticket, new_sl, pos.tp, digits):
                 logger.info(
-                    f"☑  Break-even BUY #{pos.ticket} | "
-                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f}"
+                    f"☑  BE+ BUY #{pos.ticket} | SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} "
+                    f"(entrada {pos.price_open:.{digits}f} + {be_offset:.{digits}f} | "
+                    f"recorrido {profit_distance:.{digits}f}/{trigger:.{digits}f})"
                 )
                 return True
 
@@ -276,11 +297,12 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
             return False
         profit_distance = pos.price_open - pos.price_current
         if profit_distance >= trigger:
-            new_sl = round(pos.price_open - buf, digits)
-            if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
+            new_sl = round(pos.price_open - be_offset, digits)
+            if new_sl > pos.price_current and _modify_sl(pos.ticket, new_sl, pos.tp, digits):
                 logger.info(
-                    f"☑  Break-even SELL #{pos.ticket} | "
-                    f"SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f}"
+                    f"☑  BE+ SELL #{pos.ticket} | SL: {pos.sl:.{digits}f} → {new_sl:.{digits}f} "
+                    f"(entrada {pos.price_open:.{digits}f} - {be_offset:.{digits}f} | "
+                    f"recorrido {profit_distance:.{digits}f}/{trigger:.{digits}f})"
                 )
                 return True
 
@@ -291,10 +313,59 @@ def update_breakeven(pos, atr: float, symbol_info) -> bool:
 # TRAILING STOP
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _progressive_lock_sl(pos, atr: float, is_buy: bool):
+    """
+    SL del "lock progresivo": asegura una fracción CRECIENTE del profit abierto a
+    medida que el trade avanza. La fracción sube linealmente de TRAIL_LOCK_PCT_MIN
+    a TRAIL_LOCK_PCT_MAX entre TRAIL_LOCK_START_ATR y TRAIL_LOCK_FULL_ATR (profit
+    medido en múltiplos de ATR), de modo que un retroceso salga en positivo (→ ~1:1).
+
+    Devuelve (new_sl, lock_pct) o None si el progresivo está desactivado o el profit
+    todavía no supera TRAIL_LOCK_START_ATR (aún se deja correr).
+    """
+    if not USE_PROGRESSIVE_TRAIL or atr <= 0:
+        return None
+
+    profit = (pos.price_current - pos.price_open) if is_buy else (pos.price_open - pos.price_current)
+    if profit <= 0:
+        return None
+
+    profit_atr = profit / atr
+    if profit_atr < TRAIL_LOCK_START_ATR:
+        return None
+
+    span     = max(TRAIL_LOCK_FULL_ATR - TRAIL_LOCK_START_ATR, 1e-9)
+    ramp     = min(max((profit_atr - TRAIL_LOCK_START_ATR) / span, 0.0), 1.0)
+    lock_pct = TRAIL_LOCK_PCT_MIN + ramp * (TRAIL_LOCK_PCT_MAX - TRAIL_LOCK_PCT_MIN)
+    locked   = profit * lock_pct
+
+    new_sl = pos.price_open + locked if is_buy else pos.price_open - locked
+    return new_sl, lock_pct
+
+
+def _log_trail(direction: str, pos, new_sl: float, driver: str, lock_pct, digits: int) -> None:
+    """Loguea el movimiento del trailing. El lock progresivo va a INFO (visible)."""
+    arrow = "↑" if direction == "BUY" else "↓"
+    if driver == "LOCK":
+        logger.info(
+            f"{arrow}  Trailing {direction} #{pos.ticket} | SL {pos.sl:.{digits}f} → {new_sl:.{digits}f} "
+            f"| lock progresivo asegura {lock_pct * 100:.0f}% del profit"
+        )
+    else:
+        logger.debug(
+            f"{arrow}  Trailing {direction} #{pos.ticket} | "
+            f"SL {pos.sl:.{digits}f} → {new_sl:.{digits}f} (ATR)"
+        )
+
+
 def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
     """
-    Trailing stop dinámico: el SL sigue al precio actual manteniendo
-    una distancia de TRAILING_ATR_MULT × ATR.
+    Trailing stop dinámico. En cada ciclo elige el SL MÁS protector entre:
+      • Trail clásico ATR : precio ∓ TRAILING_ATR_MULT × ATR (deja respirar la tendencia)
+      • Lock progresivo   : asegura una fracción creciente del profit abierto (→ ~1:1,
+                            ver _progressive_lock_sl). Hace que la línea de SL avance
+                            progresivamente hasta blindar casi toda la ganancia, para
+                            que un "back" del precio cierre en positivo, no en pérdida.
 
     Reglas:
       • Solo mueve el SL en la dirección FAVORABLE (nunca lo empeora)
@@ -304,29 +375,32 @@ def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
     if not USE_TRAILING_STOP:
         return False
 
-    trail_dist = atr * TRAILING_ATR_MULT
-    digits     = symbol_info.digits
-    min_dist   = _min_stop_dist(symbol_info) + symbol_info.point * 3
+    digits   = symbol_info.digits
+    min_dist = _min_stop_dist(symbol_info) + symbol_info.point * 3
 
     if pos.type == mt5.ORDER_TYPE_BUY:
-        new_sl = round(pos.price_current - trail_dist, digits)
+        candidate, driver, lock_pct = pos.price_current - atr * TRAILING_ATR_MULT, "ATR", None
+        lock = _progressive_lock_sl(pos, atr, is_buy=True)
+        if lock is not None and lock[0] > candidate:   # el lock asegura más → úsalo
+            candidate, lock_pct, driver = lock[0], lock[1], "LOCK"
+
+        new_sl = round(candidate, digits)
         # Mover solo si mejora el SL actual y es seguro
         if new_sl > pos.sl and (pos.price_current - new_sl) >= min_dist:
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
-                logger.debug(
-                    f"↑  Trailing BUY #{pos.ticket} | "
-                    f"SL {pos.sl:.{digits}f} → {new_sl:.{digits}f}"
-                )
+                _log_trail("BUY", pos, new_sl, driver, lock_pct, digits)
                 return True
 
     else:  # SELL
-        new_sl = round(pos.price_current + trail_dist, digits)
+        candidate, driver, lock_pct = pos.price_current + atr * TRAILING_ATR_MULT, "ATR", None
+        lock = _progressive_lock_sl(pos, atr, is_buy=False)
+        if lock is not None and lock[0] < candidate:   # el lock asegura más → úsalo
+            candidate, lock_pct, driver = lock[0], lock[1], "LOCK"
+
+        new_sl = round(candidate, digits)
         if new_sl < pos.sl and (new_sl - pos.price_current) >= min_dist:
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
-                logger.debug(
-                    f"↓  Trailing SELL #{pos.ticket} | "
-                    f"SL {pos.sl:.{digits}f} → {new_sl:.{digits}f}"
-                )
+                _log_trail("SELL", pos, new_sl, driver, lock_pct, digits)
                 return True
 
     return False
@@ -339,16 +413,16 @@ def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
 def is_too_close_to_existing(action: str, current_price: float, atr: float) -> bool:
     """
     Devuelve True si ya hay una posición abierta en la misma dirección
-    a menos de 0.5 × ATR del precio actual.
+    a menos de ANTI_DUP_ATR_MULT × ATR del precio actual.
 
     Cuando USE_ANTI_DUPLICATE = False retorna False directamente (sin filtro).
-    Cuando USE_ANTI_DUPLICATE = True exige al menos 0.5×ATR de distancia.
+    Cuando USE_ANTI_DUPLICATE = True exige al menos ANTI_DUP_ATR_MULT×ATR de distancia.
     """
     if not USE_ANTI_DUPLICATE:
         return False
 
     positions    = get_open_positions()
-    min_dist     = atr * 0.5
+    min_dist     = atr * ANTI_DUP_ATR_MULT
     target_type  = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
 
     for pos in positions:
@@ -376,11 +450,17 @@ def manage_open_trades(atr: float, symbol_info) -> None:
     Orden de prioridad:
       1. Break-even (protege capital primero)
       2. Trailing stop (maximiza profit después)
+
+    Si el break-even movió el SL en este ciclo, NO corremos el trailing acto
+    seguido: el objeto `pos` en memoria aún tiene el SL viejo y el trailing
+    podría calcular mal y deshacer el BE+. El trailing retoma el ciclo siguiente
+    con la posición ya refrescada.
     """
     positions = get_open_positions()
     if not positions:
         return
 
     for pos in positions:
-        update_breakeven(pos, atr, symbol_info)
-        update_trailing_stop(pos, atr, symbol_info)
+        moved_be = update_breakeven(pos, atr, symbol_info)
+        if not moved_be:
+            update_trailing_stop(pos, atr, symbol_info)

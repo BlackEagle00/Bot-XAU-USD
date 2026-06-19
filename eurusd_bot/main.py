@@ -31,15 +31,18 @@ from config import (
     SYMBOL, LOOP_INTERVAL, MAX_OPEN_TRADES,
     MIN_SIGNAL_SCORE, RISK_PER_TRADE, MIN_RR,
     SL_ATR_MULT, TP_ATR_MULT, ATR_VOLATILITY_MIN, TF_LABELS,
+    USE_ORDERFLOW, USE_INTERMARKET, USE_NEWS_FILTER,
 )
 from connection import connect, disconnect, is_market_open
 from data_handler import (
     get_market_data, get_tick, get_account_info,
-    get_symbol_info, get_open_positions
+    get_symbol_info, get_open_positions,
+    get_orderflow_delta, get_intermarket_bias,
 )
 from indicators import calculate_all
 from patterns import analyze_patterns
 from signals import generate_signal
+from news_filter import in_news_blackout
 from risk_manager import (
     calculate_lot, calculate_sl_tp, check_risk_reward,
     can_open_trade, get_total_daily_pnl
@@ -169,9 +172,13 @@ def _run_cycle():
     manage_open_trades(atr, _symbol_info)
 
     # ── 8. Detectar patrones de velas + generar señal ─────────────────────────
+    of_delta = get_orderflow_delta() if USE_ORDERFLOW else None
+    im_bias  = get_intermarket_bias() if USE_INTERMARKET else None
+
     trend   = _detect_trend_simple(ind_primary)
     patterns = analyze_patterns(data["primary"], trend)
-    signal  = generate_signal(price, ind_primary, ind_trend, patterns, atr)
+    signal  = generate_signal(price, ind_primary, ind_trend, patterns, atr,
+                              orderflow=of_delta, intermarket=im_bias)
 
     # ── 9. Intentar abrir un nuevo trade si hay señal válida ──────────────────
     if signal["action"] in ("BUY", "SELL"):
@@ -193,6 +200,13 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float):
     global _trades_today
 
     action = signal["action"]
+
+    # A0. Filtro de noticias de alto impacto (blackout alrededor del evento)
+    if USE_NEWS_FILTER:
+        in_black, ev = in_news_blackout()
+        if in_black:
+            logger.info(f"📰 Trade {action} bloqueado por noticia de alto impacto: {ev}")
+            return
 
     # A. Validar condiciones de riesgo (pérdida diaria, máx trades, margen)
     ok, reason = can_open_trade(action)
