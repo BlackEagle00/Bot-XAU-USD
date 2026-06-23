@@ -186,3 +186,16 @@ MAX_SPREAD_POINTS = 80         # Spread máx permitido (en puntos) para operar. 
                                # antes estaba fijo en 50 → bloqueaba TODOS los ciclos. Sube si tu broker
                                # tiene spread mayor; baja para ser más exigente con los costos.
 LOG_FILE         = "xauusd_bot.log"
+
+# ─── MOTOR COMPARTIDO (bot_engine) — claves añadidas al unificar el motor ───────
+# Identidad / banner de esta variante:
+ORDER_COMMENT_PREFIX = "XAU"                         # prefijo del comentario de orden MT5 (≤31 chars)
+BOT_LABEL            = "XAU/USD Swing Trading Bot"    # texto del banner de arranque
+# Contexto macro (el Oro SÍ lo usa; MACRO_TF_LABEL = etiqueta del TF superior en logs):
+USE_MACRO_CONTEXT    = True
+MACRO_TF_LABEL       = "D1"
+# S/R parametrizado (reproduce exactamente el comportamiento previo del Oro):
+SR_CLUSTER_ATR_MULT  = 0.30   # tolerancia de agrupación = 0.30×ATR
+SR_TOLERANCE_FLOOR   = 0.5    # piso en $ (solo Oro) → max(atr*0.30, 0.5)
+PSYCH_LEVEL_STEP     = 5.0    # niveles psicológicos cada $5 (2040, 2045, …)
+PSYCH_LEVEL_COUNT    = 5      # nº de niveles psicológicos a cada lado del precio

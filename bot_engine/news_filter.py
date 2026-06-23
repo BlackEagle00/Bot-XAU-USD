@@ -17,7 +17,7 @@ import json
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-from logger_config import logger
+from .logger_config import logger
 from config import (
     USE_NEWS_FILTER, NEWS_CURRENCIES, NEWS_IMPACTS,
     NEWS_BLACKOUT_BEFORE_MIN, NEWS_BLACKOUT_AFTER_MIN, NEWS_FAIL_OPEN,

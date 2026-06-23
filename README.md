@@ -1,10 +1,10 @@
 # Bots de Trading MetaTrader 5 — Oro (XAU/USD) y EUR/USD
 
-Conjunto de **4 bots de trading automático** para MetaTrader 5, cada uno una copia
-independiente del mismo motor, afinada para su instrumento y estilo. Combinan análisis
-técnico multitemporal, 35+ patrones de velas, gestión de riesgo dinámica y varios
-**filtros direccionales** (fuerza de tendencia, presión de order-flow, sesgo del dólar
-y un filtro de noticias de alto impacto).
+Conjunto de **4 bots de trading automático** para MetaTrader 5 que comparten **un único
+motor** (`bot_engine/`) y se diferencian solo por su `config.py`. Cada uno está afinado para
+su instrumento y estilo. Combinan análisis técnico multitemporal, 35+ patrones de velas,
+gestión de riesgo dinámica y varios **filtros direccionales** (fuerza de tendencia, presión
+de order-flow, sesgo del dólar y un filtro de noticias de alto impacto).
 
 > ⚠️ Solo Windows: la API de Python de MT5 necesita el **terminal MetaTrader 5 abierto y
 > con sesión iniciada** en la misma máquina.
@@ -20,12 +20,14 @@ y un filtro de noticias de alto impacto).
 | `eurusd_bot/`          | EUR/USD    | **Swing**     | H1 / H4 / D1  | 60 s | 20260619 |
 | `eurusd_scalping_bot/` | EUR/USD    | **Scalping**  | M5 / M15 / H1 | 10 s | 20260620 |
 
-Cada bot tiene su propio `config.py`, su `MAGIC_NUMBER` (para no mezclar trades) y su
-`.log`. **Pueden correr a la vez** en la misma cuenta sin pisarse: cada uno solo gestiona
-las posiciones que él mismo abrió (filtra por su Magic).
+Cada carpeta de bot contiene solo su `config.py` (parámetros propios) y un `main.py` lanzador
+delgado; toda la lógica vive en `bot_engine/`. Cada bot tiene su `MAGIC_NUMBER` (para no
+mezclar trades) y su `.log`. **Pueden correr a la vez** en la misma cuenta sin pisarse: cada
+uno solo gestiona las posiciones que él mismo abrió (filtra por su Magic).
 
-> El motor está **copiado**, no compartido: una mejora en un bot hay que replicarla a mano
-> en los otros. Esto es intencional para poder afinar cada bot por separado.
+> El motor es **compartido**: una mejora se hace **una sola vez** en `bot_engine/` y aplica a
+> los 4 bots. Las diferencias entre bots (temporalidades, contexto macro, escala de S/R,
+> umbrales…) se controlan por `config.py`, no duplicando código.
 
 ### 📖 Guías detalladas por instrumento
 
@@ -313,38 +315,48 @@ Mantén estos valores **intencionalmente distintos** por instrumento/estilo:
 ```
 Bot-XAU-USD/
 ├── run.py              → Lanzador común de los 4 bots
-├── requirements.txt    → Dependencias (canónico; cada bot tiene copia idéntica)
+├── requirements.txt    → Dependencias del proyecto
 ├── .env.example        → Plantilla de credenciales (copiar a .env)
 ├── README.md           → Este panorama general
 ├── CLAUDE.md           → Guía para agentes/IA que trabajen el repo
-├── xauusd_bot/         → Bot Oro swing      (ver detalle abajo)
-├── xauusd_scalping_bot/→ Bot Oro scalping
-├── eurusd_bot/         → Bot EUR/USD swing
-├── eurusd_scalping_bot/→ Bot EUR/USD scalping
+├── bot_engine/         → ⚙️ EL MOTOR COMPARTIDO (toda la lógica; ver detalle abajo)
+├── xauusd_bot/         → config.py + main.py (Oro swing)
+├── xauusd_scalping_bot/→ config.py + main.py (Oro scalping)
+├── eurusd_bot/         → config.py + main.py (EUR/USD swing)
+├── eurusd_scalping_bot/→ config.py + main.py (EUR/USD scalping)
 ├── docs/               → Guías por instrumento, brokers, migración (+ historico/)
 └── backtesting/        → Toolkit de backtesting independiente (no usado por los bots)
 ```
 
-## Archivos de cada bot
+Cada carpeta de bot tiene solo **dos** archivos:
 
 ```
 <bot>/
-├── main.py           → Loop principal y orquestación
-├── config.py         → TODOS los parámetros (uno por bot, valores distintos)
+├── config.py   → TODOS los parámetros de ese bot (valores propios)
+└── main.py     → Lanzador delgado: pone su config.py en sys.path y llama a bot_engine.core.run()
+```
+
+## El motor compartido (`bot_engine/`)
+
+```
+bot_engine/
+├── core.py           → Loop principal y orquestación (run(), _run_cycle(), _try_open_trade())
 ├── connection.py     → Conexión / reconexión a MT5
 ├── data_handler.py   → OHLCV, cuenta, order-flow (ticks) y sesgo DXY
-├── indicators.py     → EMA, SMA, RSI, MACD, ATR, ADX, BB, VWAP, S/R
+├── indicators.py     → EMA, SMA, RSI, MACD, ATR, ADX, BB, VWAP, S/R (parametrizado por config)
 ├── patterns.py       → 35+ patrones de velas
-├── signals.py        → Motor de scoring + filtros (gates)
+├── signals.py        → Motor de scoring + filtros (gates); macro gated por USE_MACRO_CONTEXT
 ├── risk_manager.py   → Lote, SL/TP, pérdida diaria, margen
 ├── trade_manager.py  → Abrir/cerrar, break-even, trailing progresivo, anti-dup
 ├── news_filter.py    → Calendario económico (blackout de noticias)
 ├── telegram_notifier.py → Notificaciones a Telegram (opcional)
-├── logger_config.py  → Logs a consola y a archivo .log
-└── requirements.txt  → Dependencias Python
+└── logger_config.py  → Logs a consola y a archivo .log
 ```
 
-`run.py` (raíz) es el lanzador común de los 4 bots.
+Los módulos del motor se importan entre sí con imports relativos (`from .signals import …`) y
+leen los parámetros con `from config import …`, que resuelve al `config.py` del bot que lo
+lanzó (su carpeta va primero en `sys.path`). Como cada bot corre en su **propio proceso**, no
+se mezclan configs. `run.py` (raíz) es el lanzador común de los 4 bots.
 
 ---
 

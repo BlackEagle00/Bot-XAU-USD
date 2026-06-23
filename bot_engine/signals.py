@@ -13,25 +13,25 @@ Sistema de puntuación ponderada (score máximo ≈ ±12):
 │ Soporte/Resistencia  │ ×0.5  │ -1.5  a +1.5       │
 │ VWAP                 │ ×0.3  │ -1.0  a +1.0       │
 │ Volumen              │ ×0.2  │ -0.5  a +0.5       │
-│ Confirmación TF tend.│ ×0.8  │ (del score EMA M15)│
-│ Contexto macro H1    │ ×0.5  │ -2.0  a +2.0       │
+│ Confirmación TF tend.│ ×1.0  │ (del score EMA H4) │
+│ Contexto macro D1    │ ×0.8  │ -2.0  a +2.0       │
 └──────────────────────┴───────┴───────────────────┘
 
  score ≥ +MIN_SIGNAL_SCORE → BUY
  score ≤ -MIN_SIGNAL_SCORE → SELL
 
-El contexto macro (H1) puede actuar también como FILTRO: con
-REQUIRE_MACRO_ALIGNMENT=True (desactivado por defecto en scalping), una
-tendencia H1 FUERTE veta las operaciones en su contra.
+El contexto macro (D1) además actúa como FILTRO: con REQUIRE_MACRO_ALIGNMENT,
+una tendencia diaria FUERTE veta las operaciones en su contra.
 """
 import pandas as pd
 from typing import Tuple
-from logger_config import logger
+from .logger_config import logger
 from config import (
     RSI_OB, RSI_OS, MIN_SIGNAL_SCORE, ATR_VOLATILITY_MIN, SCORE_WEIGHTS,
     REQUIRE_TREND_ALIGNMENT, REQUIRE_MACRO_ALIGNMENT,
     RSI_NO_SELL_BELOW, RSI_NO_BUY_ABOVE,
     USE_ADX_FILTER, ADX_MIN_TREND, INTERMARKET_INVERSE,
+    USE_MACRO_CONTEXT, MACRO_TF_LABEL,
 )
 
 
@@ -320,16 +320,16 @@ def _score_support_resistance(ind: dict, price: float) -> Tuple[float, list]:
 
 def _score_macro(ind: dict, price: float) -> Tuple[float, str, bool, list]:
     """
-    Contexto macro del timeframe superior (H1 en este bot de scalping).
+    Contexto macro del timeframe superior (D1 en oro swing, H1 en oro scalp;
+    etiqueta en logs via MACRO_TF_LABEL). Solo se invoca si USE_MACRO_CONTEXT.
 
-    Evalúa la tendencia del H1 con las EMAs para dar un sesgo direccional al
-    score y clasificar la tendencia mayor. Sirve a dos propósitos:
-      • Nudge: suma/resta al score total a favor del H1 (ponderado por
+    Evalúa la tendencia del TF superior con las EMAs para dar un sesgo direccional
+    al score y clasificar la tendencia macro. Sirve a dos propósitos:
+      • Nudge: suma/resta al score total a favor del diario (ponderado por
         SCORE_WEIGHTS["macro_tf"]). Máx ±2.0 antes de ponderar → no dispara
         una señal por sí solo, solo inclina la balanza.
-      • Filtro (opcional): si `strong` es True (las 4 EMAs del H1 en cascada
-        perfecta) y REQUIRE_MACRO_ALIGNMENT=True, generate_signal veta las
-        operaciones contra esa tendencia.
+      • Filtro: si `strong` es True (las 4 EMAs diarias en cascada perfecta),
+        generate_signal veta las operaciones contra esa tendencia.
 
     Returns:
         (score, trend, strong, notes)
@@ -348,27 +348,27 @@ def _score_macro(ind: dict, price: float) -> Tuple[float, str, bool, list]:
 
     score, trend, strong = 0.0, "neutral", False
 
-    # Alineación de las EMAs del H1
+    # Alineación de las EMAs diarias
     if e9 > e21 > e50 > e200:
         score, trend, strong = 2.0, "up", True
-        notes.append("🌐 H1: tendencia macro ALCISTA fuerte (EMAs en cascada)")
+        notes.append(f"🌐 {MACRO_TF_LABEL}: tendencia macro ALCISTA fuerte (EMAs en cascada)")
     elif e9 < e21 < e50 < e200:
         score, trend, strong = -2.0, "down", True
-        notes.append("🌐 H1: tendencia macro BAJISTA fuerte (EMAs en cascada)")
+        notes.append(f"🌐 {MACRO_TF_LABEL}: tendencia macro BAJISTA fuerte (EMAs en cascada)")
     elif e9 > e50:
         score, trend = 1.0, "up"
-        notes.append("🌐 H1: sesgo macro alcista (parcial)")
+        notes.append(f"🌐 {MACRO_TF_LABEL}: sesgo macro alcista (parcial)")
     elif e9 < e50:
         score, trend = -1.0, "down"
-        notes.append("🌐 H1: sesgo macro bajista (parcial)")
+        notes.append(f"🌐 {MACRO_TF_LABEL}: sesgo macro bajista (parcial)")
     else:
-        notes.append("🌐 H1: sin tendencia macro definida")
+        notes.append(f"🌐 {MACRO_TF_LABEL}: sin tendencia macro definida")
 
-    # Precio respecto a la EMA200 del H1 (la gran divisoria alcista/bajista)
+    # Precio respecto a la EMA200 diaria (la gran divisoria alcista/bajista)
     if price > e200:
-        score += 0.5; notes.append("🌐 H1: precio sobre EMA200 (zona alcista)")
+        score += 0.5; notes.append(f"🌐 {MACRO_TF_LABEL}: precio sobre EMA200 (zona alcista)")
     else:
-        score -= 0.5; notes.append("🌐 H1: precio bajo EMA200 (zona bajista)")
+        score -= 0.5; notes.append(f"🌐 {MACRO_TF_LABEL}: precio bajo EMA200 (zona bajista)")
 
     return max(-2.0, min(2.0, score)), trend, strong, notes
 
@@ -438,7 +438,7 @@ def generate_signal(
         ind_trend:   Indicadores del TF de tendencia (H4)
         patterns:    Resultado de analyze_patterns()
         atr:         ATR actual en precio
-        ind_higher:  Indicadores del TF macro (H1). Opcional: si es None se
+        ind_higher:  Indicadores del TF macro (D1). Opcional: si es None se
                      omite el contexto/ filtro macro.
 
     Returns:
@@ -476,7 +476,7 @@ def generate_signal(
     s_trend_ema, n_trend = _score_ema(ind_trend, price)
     s_trend_conf = s_trend_ema * w["trend_tf"]
 
-    # ── Contexto macro del TF superior (H1) ───────────────────────────────────
+    # ── Contexto macro del TF superior (D1) ───────────────────────────────────
     s_macro_raw, macro_trend, macro_strong, n_macro = 0.0, "neutral", False, []
     if ind_higher:
         s_macro_raw, macro_trend, macro_strong, n_macro = _score_macro(ind_higher, price)
@@ -527,7 +527,7 @@ def generate_signal(
         action = "HOLD"
 
     # ── Filtro de alineación de tendencia ─────────────────────────────────────
-    # En scalping solo operamos a favor de la tendencia del M5 (anti-contratendencia).
+    # En swing trading solo operamos a favor de la tendencia dominante.
     # Un BUY en tendencia bajista o SELL en tendencia alcista aumenta el riesgo.
     if REQUIRE_TREND_ALIGNMENT and action != "HOLD":
         if trend == "up" and action == "SELL":
@@ -541,24 +541,24 @@ def generate_signal(
             )
             action = "HOLD"
 
-    # ── Filtro de contexto macro (H1) ─────────────────────────────────────────
-    # Si el H1 marca una tendencia FUERTE (EMAs en cascada), opcionalmente no
-    # hacemos scalp en su contra: un BUY contra un H1 bajista fuerte suele ser una
-    # trampa alcista (rebote dentro de tendencia mayor), y viceversa. Solo veta
-    # tendencias H1 decididas; en H1 mixto/neutral deja que decidan M5/M15.
-    # En scalping va DESACTIVADO por defecto (REQUIRE_MACRO_ALIGNMENT=False).
+    # ── Filtro de contexto macro (D1) ─────────────────────────────────────────
+    # Si el diario marca una tendencia FUERTE (EMAs en cascada), no operamos en
+    # su contra: un BUY contra un D1 bajista fuerte suele ser una trampa alcista
+    # (rebote dentro de tendencia mayor), y viceversa. Solo veta tendencias macro
+    # decididas; en D1 mixto/neutral deja que decida el H1.
     if REQUIRE_MACRO_ALIGNMENT and action != "HOLD" and macro_strong:
         if macro_trend == "up" and action == "SELL":
-            reasons.append("⛔ SELL bloqueado: contexto macro H1 ALCISTA fuerte")
+            reasons.append(f"⛔ SELL bloqueado: contexto macro {MACRO_TF_LABEL} ALCISTA fuerte")
             action = "HOLD"
         elif macro_trend == "down" and action == "BUY":
-            reasons.append("⛔ BUY bloqueado: contexto macro H1 BAJISTA fuerte")
+            reasons.append(f"⛔ BUY bloqueado: contexto macro {MACRO_TF_LABEL} BAJISTA fuerte")
             action = "HOLD"
 
     # ── Filtro anti-agotamiento (extremos de RSI) ─────────────────────────────
     # No abrir NUEVAS entradas donde el movimiento suele agotarse y revertir:
     # vender con RSI sobrevendido = "vender en el suelo"; comprar con RSI
-    # sobrecomprado = "comprar en el techo".
+    # sobrecomprado = "comprar en el techo". Justo lo que castiga al apilar trades
+    # de tendencia hasta el final del movimiento (rebote → todas tocan SL).
     rsi_now = ind_primary.get("rsi")
     if rsi_now is not None and action != "HOLD":
         if action == "SELL" and rsi_now <= RSI_NO_SELL_BELOW:
@@ -599,15 +599,20 @@ def generate_signal(
         "intermarket": round(s_im * w.get("intermarket", 0.0), 3),
     }
 
+    # Campos macro: solo aparecen en el log si el bot usa contexto macro (oro).
+    # Así el log de los bots sin macro (EUR/USD) queda idéntico a antes.
+    _macro_field       = f"Macro:{s_macro:+.2f} " if USE_MACRO_CONTEXT else ""
+    _macro_trend_field = f" | {MACRO_TF_LABEL}: {macro_trend}" if USE_MACRO_CONTEXT else ""
+
     logger.info(
         f"📊 {action:4s} | Score: {total:+6.2f} | "
         f"EMA:{s_ema*w['ema']:+.2f} RSI:{s_rsi*w['rsi']:+.2f} "
         f"MACD:{s_macd*w['macd']:+.2f} BB:{s_bb*w['bb']:+.2f} "
         f"Pat:{s_pat*w['patterns']:+.2f} S/R:{s_sr*w['sr']:+.2f} "
-        f"Macro:{s_macro:+.2f} OF:{s_of*w.get('orderflow',0.0):+.2f} "
+        f"{_macro_field}OF:{s_of*w.get('orderflow',0.0):+.2f} "
         f"IM:{s_im*w.get('intermarket',0.0):+.2f} | "
         f"ADX:{(adx_now if adx_now is not None else 0):.0f} | "
-        f"Tendencia: {trend} | H1: {macro_trend} | ATR: {atr:.3f}"
+        f"Tendencia: {trend}{_macro_trend_field} | ATR: {atr:.3f}"
     )
 
     return {

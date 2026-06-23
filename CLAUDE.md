@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 An automated trading bot for MetaTrader 5 (Windows only — MT5's Python API requires the MT5 terminal
-running locally). The original bot is the gold one in `xauusd_bot/`; the repo now holds **four
-independent bot variants**, each a self-contained copy of the same engine with its own `config.py`,
-`MAGIC_NUMBER`, and `LOG_FILE` (so they can run side-by-side on one account without touching each
-other's trades):
+running locally). The original bot was the gold one in `xauusd_bot/`; the repo now holds **four bot
+variants that share a single engine** (`bot_engine/`). Each bot folder contains only its own `config.py`
+(parameters) and a thin `main.py` launcher — all logic lives once in `bot_engine/`. Each bot has its own
+`MAGIC_NUMBER` and `LOG_FILE`, so they run side-by-side on one account without touching each other's trades:
 
 | Folder | Symbol | Mode | Magic |
 |---|---|---|---|
@@ -18,17 +18,25 @@ other's trades):
 | `eurusd_scalping_bot/` | EURUSD | scalping M5/M15/H1 | 20260620 |
 
 `run.py` (repo root) is the launcher: `python run.py` for an interactive menu, or
-`python run.py <key>` where key ∈ `oro | oro_scalping | eurusd | eurusd_scalping`. Because the engine is
-**copied** (not shared/imported), a fix in one bot's module must be applied to the others by hand — they
-have drifted on purpose. Intentional divergences to remember:
-- **Macro filter** lives in **both Gold bots' `signals.py`** but not the EURUSD ones: `xauusd_bot/`
-  consumes D1 with a hard veto (`REQUIRE_MACRO_ALIGNMENT=True`), `xauusd_scalping_bot/` consumes H1 as a
-  soft score nudge only (`REQUIRE_MACRO_ALIGNMENT=False`). The two EURUSD bots fetch `higher` but don't
-  score it (no `_score_macro`, no `macro_tf` weight).
-- **Gold-scale S/R** lives only in the gold bots; the EURUSD bots have a parametrized S/R fix
-  (`SR_CLUSTER_ATR_MULT`, `PSYCH_LEVEL_STEP`) the gold bots don't need.
-- Replicated across all 4 (only the numeric values differ per bot — see the tuning table below; when you
-  touch one of these, mirror the logic to all 4 and only vary the numbers):
+`python run.py <key>` where key ∈ `oro | oro_scalping | eurusd | eurusd_scalping`. **The engine is shared,
+not copied**: fix or improve it **once** in `bot_engine/` and it applies to all 4 bots. A bot's `main.py`
+puts its own folder first on `sys.path`, so the engine's `from config import …` resolves to that bot's
+`config.py`; engine modules import each other relatively (`from .signals import …`). Each bot runs in its
+own process (`run.py` uses subprocess), so configs never collide. Differences between bots are **driven by
+config**, not by divergent code:
+- **Macro context** is one code path in `bot_engine/signals.py`, gated per bot by `USE_MACRO_CONTEXT`:
+  gold bots set it `True` (swing consumes D1 with a hard veto `REQUIRE_MACRO_ALIGNMENT=True`; scalp
+  consumes H1 as a soft nudge, `REQUIRE_MACRO_ALIGNMENT=False`), and `MACRO_TF_LABEL` ("D1"/"H1") sets the
+  log label. The EURUSD bots set `USE_MACRO_CONTEXT=False` (+ `REQUIRE_MACRO_ALIGNMENT=False`, no
+  `macro_tf` weight) → `core.py` passes `ind_higher=None` and the macro fields don't even appear in their
+  log line.
+- **S/R scale** is parametrized in `bot_engine/indicators.py` via `SR_CLUSTER_ATR_MULT`,
+  `SR_TOLERANCE_FLOOR`, `PSYCH_LEVEL_STEP`, `PSYCH_LEVEL_COUNT` (gold: 0.3 / 0.5 / 5.0 / 5, which reproduces
+  the old `max(atr*0.3, 0.5)` + $5 levels; EUR: floor 0.0 + a decimal step).
+- **Order-comment prefix** is `ORDER_COMMENT_PREFIX` ("XAU"/"XAU"/"EUR"/"EURs"); the startup banner text is
+  `BOT_LABEL`.
+- All the directional factors below are single implementations in the engine, switched/weighted by config
+  (only the numeric values differ per bot — see the tuning table below):
   - **BE+**, **anti-exhaustion RSI filter**, **configurable anti-dup spacing** (the original trio).
   - **Progressive trailing lock** (`TRAIL_LOCK_*` in config; `_progressive_lock_sl` in `trade_manager.py`)
     — the trailing tightens to lock a growing fraction of open profit (→ ~1:1) as a trade matures.
@@ -41,27 +49,28 @@ have drifted on purpose. Intentional divergences to remember:
     `SCORE_WEIGHTS["intermarket"]`, `INTERMARKET_INVERSE=True`) — dollar-index bias, inverse for gold/EUR.
     `INTERMARKET_SYMBOL` is `"USDX-SEP26"` on the XM account (a quarterly **futures** contract — roll the
     suffix when it expires ~2026-09-11); if the broker lacks the symbol the factor degrades to no-op.
-  - **News filter** (`USE_NEWS_FILTER`; new per-bot module **`news_filter.py`**) — blackout gate around
-    high-impact calendar events (ForexFactory weekly JSON; fail-open when offline via `NEWS_FAIL_OPEN`).
-  - **Telegram notifications** (`USE_TELEGRAM`; new per-bot module **`telegram_notifier.py`**) — pushes
-    bot start/stop, trade open, trade close (SL/TP/manual, with realized P&L), and MT5 connection
+  - **News filter** (`USE_NEWS_FILTER`; engine module **`bot_engine/news_filter.py`**) — blackout gate
+    around high-impact calendar events (ForexFactory weekly JSON; fail-open when offline via `NEWS_FAIL_OPEN`).
+  - **Telegram notifications** (`USE_TELEGRAM`; engine module **`bot_engine/telegram_notifier.py`**) —
+    pushes bot start/stop, trade open, trade close (SL/TP/manual, with realized P&L), and MT5 connection
     lost/restored to a Telegram chat. Stdlib `urllib` (no new dep), sends off a daemon thread, fail-open;
     **self-disables** if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (from `.env`) are empty. Each bot tags
     messages with its own `TELEGRAM_PREFIX` (`[GOLD swing]`, `[GOLD scalp]`, `[EURUSD swing]`,
-    `[EURUSD scalp]`). The module body is **identical across all 4** (it reads `SYMBOL`/`TELEGRAM_*` from
-    each bot's own `config.py`) — only the prefix value differs.
+    `[EURUSD scalp]`), read from its `config.py` — only that value differs between bots.
 
 The `backtesting/` folder holds a separate, unrelated generic backtesting framework
 (`trading_backtest_framework.py`, `metatrader_data_loader.py`, `ejemplo_completo_backtest.py`) that is
 not wired into any bot — treat it as a standalone toolkit, not part of the bots' runtime path.
 
-Repo layout (after the structural cleanup): bot engines stay as flat-import folders at the root
-(`<bot>/main.py` etc., run with `cwd` set to the bot folder — do **not** move files inside them or the
-imports break); reference docs live in `docs/` (per-instrument guides `docs/GUIA_GOLD.md` /
-`docs/GUIA_EURUSD.md`, broker/migration notes, and `docs/historico/` for dated one-off reports); the
-backtesting toolkit lives in `backtesting/`. Root keeps only `run.py`, `requirements.txt` (canonical;
-each bot still ships an identical copy so it can `pip install` from its own folder), `.env.example`,
-`README.md` and this file.
+Repo layout: the shared engine is the package `bot_engine/` (`core.py` is the loop + entry point
+`run()`, plus `signals.py`, `indicators.py`, `trade_manager.py`, etc.). Each bot folder holds only
+`config.py` + a thin `main.py` launcher that prepends its folder to `sys.path` and calls
+`bot_engine.core.run()`. Engine modules use **relative** imports for each other (`from .signals import …`)
+and **absolute** `from config import …` (resolves to the launching bot's config via `sys.path[0]`) — keep
+that split when editing or adding engine modules. Reference docs live in `docs/` (per-instrument guides
+`docs/GUIA_GOLD.md` / `docs/GUIA_EURUSD.md`, broker/migration notes, and `docs/historico/` for dated
+one-off reports); the backtesting toolkit lives in `backtesting/`. Root keeps only `run.py`,
+`requirements.txt`, `.env.example`, `README.md` and this file.
 
 **README.md is current** — it was rewritten alongside this round of features and now documents all 4
 variants, the scoring/gates, the extra directional factors (ADX / order-flow / DXY / news), and every
@@ -80,7 +89,7 @@ cd xauusd_bot && python main.py   # MT5 terminal must already be open and logged
 
 Stop with Ctrl+C — it finishes the current cycle, then disconnects cleanly. Open positions are left in
 MT5 (not closed) on shutdown; `close_all_trades()` in `trade_manager.py` exists but is commented out in
-`main.run()` if that behavior is ever wanted.
+`core.run()` if that behavior is ever wanted.
 
 There is no test suite, linter, or build step in this repo. (Two ad-hoc validator scripts,
 `validate_changes.py` and `install_and_validate.sh`, plus a `CAMBIOS_RECOMENDADOS.py` notes file, used
@@ -89,7 +98,8 @@ ever needed. To smoke-test a change, `python -m py_compile <bot>/*.py` per folde
 
 ## Configuration
 
-All tunable parameters live in `xauusd_bot/config.py`. MT5 credentials (`MT5_LOGIN`, `MT5_PASSWORD`,
+All tunable parameters live in each bot's own `config.py` (e.g. `xauusd_bot/config.py`) — the engine in
+`bot_engine/` reads them via `from config import …`. MT5 credentials (`MT5_LOGIN`, `MT5_PASSWORD`,
 `MT5_SERVER`) — and the optional Telegram secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) — are loaded
 from a `.env` file via `python-dotenv`; never hardcode them in `config.py`.
 If `MT5_LOGIN` is left at 0, the bot uses whatever account is already logged into the MT5 terminal.
@@ -141,23 +151,26 @@ risk." Gold swing's `MAX_OPEN_TRADES` was manually bumped to 5 but `RISK_PER_TRA
 risk did rise to ~5%). A proportional `RISK_PER_TRADE` cut to keep total risk flat is still pending the
 user's chosen budget (3% / 4% / 5%) and whether to apply it to the other bots.
 
-### Applying a change to all 4 bots (recurring workflow)
+### Applying a logic change (now: edit the engine once)
 
-The single most common task here is propagating a logic change across the copied engines. Reliable recipe:
-1. Make the change in `xauusd_bot/` first (it's the canonical/most-evolved copy).
-2. For pure-logic files where only a header/comment line differs, `cp` then `sed`-restore the per-bot
-   lines: `trade_manager.py` differs from gold's only at the docstring header (line ~2) and the order
-   `comment` prefix (`XAU` / `EUR` / `EURs`). `signals.py` differs by the macro block (present in gold,
-   absent in EURUSD) and import lines — don't blindly `cp` it across symbols.
-3. For `config.py`, edit each file in place (never `cp` — every value is per-bot).
-4. Verify all 4 compile and the wiring is live:
-   `python -c "import ast,importlib"`-style smoke tests, or just `python -m py_compile <bot>/*.py` per
-   folder, plus a quick check that `signals.py` references the new config name and `trade_manager.py`
-   reads it from config.
+With the shared engine there's no more copy/paste across folders — that's the whole point of the refactor.
+1. **Logic change** → edit the relevant module in `bot_engine/` **once**; it applies to all 4 bots.
+2. **Behavior that must differ per bot** → don't fork the code. Add a config key (gate/weight/scale),
+   read it in the engine with `from config import …` (or `SCORE_WEIGHTS.get(...)`/`getattr` with a default
+   for backward-compat), and set its value in each `config.py`. Existing examples: `USE_MACRO_CONTEXT`,
+   `MACRO_TF_LABEL`, `SR_TOLERANCE_FLOOR`, `ORDER_COMMENT_PREFIX`, `BOT_LABEL`. **If you import a new
+   config key unconditionally in the engine, add it to all 4 `config.py` or those bots fail at import.**
+3. **Tuning** → edit each `config.py` in place (never `cp` — every value is per-bot; see the tuning table).
+4. **Verify**: `python -m py_compile bot_engine/*.py */config.py */main.py`, then a per-bot import smoke
+   test in a separate process (replicate the launcher's `sys.path`: bot folder first, then repo root;
+   `import config; import bot_engine.core`) so a missing config key surfaces. For behavior-preserving
+   refactors, snapshot the originals and diff `generate_signal` output (action/score/reasons/log line) old
+   vs new on identical synthetic inputs.
 
 ## Architecture — the per-cycle pipeline
 
-`main.py` runs an infinite loop (`LOOP_INTERVAL` seconds, currently 60s) calling `_run_cycle()`. Each
+`bot_engine/core.py` (launched by each bot's `main.py` → `run()`) runs an infinite loop (`LOOP_INTERVAL`
+seconds, currently 60s) calling `_run_cycle()`. Each
 cycle is a strict pipeline through the other modules, and most modules only make sense in light of this
 flow:
 
@@ -219,9 +232,9 @@ flow:
    `ANTI_DUP_ATR_MULT × ATR` of an existing position in the same direction (was a hardcoded `0.5×ATR`;
    now per-bot config — swing 1.0, scalping 0.75 — to stop laddering many correlated entries into one leg).
 
-`main._try_open_trade()` is the orchestration glue for step 6→7: **`in_news_blackout()`** (high-impact
+`core._try_open_trade()` is the orchestration glue for step 6→7: **`in_news_blackout()`** (high-impact
 news gate) → `can_open_trade()` → `is_too_close_to_existing()` → `calculate_sl_tp()` → `calculate_lot()` →
-`open_trade()`. The news gate lives in the new per-bot module **`news_filter.py`**, which fetches
+`open_trade()`. The news gate lives in the engine module **`bot_engine/news_filter.py`**, which fetches
 ForexFactory's weekly JSON (`urllib`, stdlib — no new dependency), caches it ~6h, and is fail-open by
 default (`NEWS_FAIL_OPEN=True`) so an offline calendar never freezes the bot.
 
@@ -239,8 +252,8 @@ Cross-cutting concerns:
 - Broker compatibility quirks (filling mode bitmask, `trade_stops_level` minimum SL/TP distance, lot
   step/min/max) are handled defensively in `trade_manager.py` and `risk_manager.py` since brokers differ.
 - **Telegram notifications** (`telegram_notifier.py`) run as a side-channel to logging, hooked in three
-  spots: `trade_manager.open_trade()` fires `notify()` on a filled order; `main.run()` sends start/stop;
-  and `main._run_cycle()` calls `notify_connection_lost/restored()` around reconnect. Trade *closes* are
+  spots: `trade_manager.open_trade()` fires `notify()` on a filled order; `core.run()` sends start/stop;
+  and `core._run_cycle()` calls `notify_connection_lost/restored()` around reconnect. Trade *closes* are
   **not** sent from `close_trade()` (it's effectively unused in the loop) — instead
   `check_closed_positions(get_open_positions())` runs each cycle (right after `manage_open_trades`) and
   detects vanished tickets, querying `mt5.history_deals_get(position=...)` for the realized P&L. All

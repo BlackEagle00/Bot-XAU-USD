@@ -20,13 +20,13 @@ import MetaTrader5 as mt5
 from datetime import datetime, date
 from typing import Tuple
 
-from logger_config import logger
+from .logger_config import logger
 from config import (
     SYMBOL, MAGIC_NUMBER,
     RISK_PER_TRADE, MAX_OPEN_TRADES, MAX_DAILY_LOSS_PCT,
     SL_ATR_MULT, TP_ATR_MULT, MIN_LOT, MAX_LOT, MIN_RR
 )
-from data_handler import get_open_positions, get_account_info
+from .data_handler import get_open_positions, get_account_info
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

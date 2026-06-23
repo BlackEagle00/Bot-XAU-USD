@@ -16,6 +16,7 @@ from config import (
     ATR_PERIOD, BB_PERIOD, BB_STD,
     VWAP_PERIOD, SR_LOOKBACK, SR_LEVELS, SR_24H_CANDLES,
     ADX_PERIOD,
+    SR_CLUSTER_ATR_MULT, SR_TOLERANCE_FLOOR, PSYCH_LEVEL_STEP, PSYCH_LEVEL_COUNT,
 )
 
 
@@ -216,7 +217,9 @@ def get_support_resistance(df: pd.DataFrame,
         {"supports": [...], "resistances": [...]}
         Ordenados por proximidad al precio actual.
     """
-    tolerance = max(atr * 0.3, 0.5)  # Tolerancia de agrupación
+    # Tolerancia de agrupación relativa al instrumento. El piso (SR_TOLERANCE_FLOOR)
+    # solo aplica al Oro (0.5 $); en forex es 0.0 para no romper la escala en decimales.
+    tolerance = max(atr * SR_CLUSTER_ATR_MULT, SR_TOLERANCE_FLOOR)
 
     # 1. Pivots históricos
     p_highs = _find_pivot_highs(df["high"], SR_LOOKBACK)
@@ -230,10 +233,12 @@ def get_support_resistance(df: pd.DataFrame,
     all_res.append(float(last_24h["high"].max()))
     all_sup.append(float(last_24h["low"].min()))
 
-    # 3. Niveles psicológicos cercanos al precio
-    base = round(current_price / 5) * 5  # Múltiplos de $5
-    for delta in range(-25, 30, 5):
-        lvl = base + delta
+    # 3. Niveles psicológicos cercanos al precio (paso/cantidad según el instrumento:
+    #    Oro = 5.0 × 5 niveles, EURUSD = 0.0050 × 6 niveles — definido en config).
+    step = PSYCH_LEVEL_STEP
+    base = round(current_price / step) * step
+    for k in range(-PSYCH_LEVEL_COUNT, PSYCH_LEVEL_COUNT + 1):
+        lvl = base + k * step
         if lvl > current_price + tolerance:
             all_res.append(float(lvl))
         elif lvl < current_price - tolerance:

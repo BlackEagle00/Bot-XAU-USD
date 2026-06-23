@@ -185,3 +185,15 @@ MAX_SPREAD_POINTS = 70          # Spread máx (en puntos). El oro en XM ≈ 50-7
                                 # sin bloquear todo. Si NUNCA opera, súbelo; si quieres entradas más
                                 # baratas, bájalo (pero el oro rara vez baja de ~50).
 LOG_FILE         = "xauusd_scalping_bot.log"
+
+# ─── MOTOR COMPARTIDO (bot_engine) — claves añadidas al unificar el motor ───────
+ORDER_COMMENT_PREFIX = "XAU"                          # prefijo del comentario de orden MT5 (≤31 chars)
+BOT_LABEL            = "XAU/USD (Oro) Scalping Bot"   # texto del banner de arranque
+# Contexto macro (en scalp el Oro lo usa como sesgo H1, sin veto — REQUIRE_MACRO_ALIGNMENT=False arriba):
+USE_MACRO_CONTEXT    = True
+MACRO_TF_LABEL       = "H1"
+# S/R parametrizado (reproduce exactamente el comportamiento previo del Oro):
+SR_CLUSTER_ATR_MULT  = 0.30   # tolerancia de agrupación = 0.30×ATR
+SR_TOLERANCE_FLOOR   = 0.5    # piso en $ (solo Oro) → max(atr*0.30, 0.5)
+PSYCH_LEVEL_STEP     = 5.0    # niveles psicológicos cada $5
+PSYCH_LEVEL_COUNT    = 5      # nº de niveles psicológicos a cada lado del precio

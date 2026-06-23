@@ -21,7 +21,7 @@ import urllib.request
 
 import MetaTrader5 as mt5
 
-from logger_config import logger
+from .logger_config import logger
 from config import (
     USE_TELEGRAM, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PREFIX, SYMBOL,
 )

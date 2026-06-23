@@ -1,5 +1,5 @@
 """
-Gestión de Trades — XAU/USD Scalping Bot
+Gestión de Trades — motor compartido (Oro/EUR · swing/scalping)
 
 Responsabilidades:
   • Abrir órdenes de mercado BUY/SELL en MT5
@@ -19,9 +19,9 @@ Notas de compatibilidad MT5:
 import MetaTrader5 as mt5
 from typing import Optional
 
-from logger_config import logger
+from .logger_config import logger
 from config import (
-    SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE,
+    SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE, ORDER_COMMENT_PREFIX,
     USE_TRAILING_STOP, USE_BREAKEVEN, USE_ANTI_DUPLICATE,
     BREAKEVEN_ATR_MULT, TRAILING_ATR_MULT,
     BE_TRIGGER_PCT, BE_PLUS_POINTS,
@@ -29,8 +29,8 @@ from config import (
     USE_PROGRESSIVE_TRAIL, TRAIL_LOCK_START_ATR,
     TRAIL_LOCK_PCT_MIN, TRAIL_LOCK_PCT_MAX, TRAIL_LOCK_FULL_ATR,
 )
-from data_handler import get_open_positions, get_tick
-from telegram_notifier import notify
+from .data_handler import get_open_positions, get_tick
+from .telegram_notifier import notify
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -104,7 +104,7 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
         "tp":           round(tp, digits),
         "deviation":    MAX_SLIPPAGE,
         "magic":        MAGIC_NUMBER,
-        "comment":      f"XAU {comment}"[:31],
+        "comment":      f"{ORDER_COMMENT_PREFIX} {comment}"[:31],
         "type_time":    mt5.ORDER_TIME_GTC,
         "type_filling": filling,
     }

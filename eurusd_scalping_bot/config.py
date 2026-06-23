@@ -170,3 +170,12 @@ MAX_SPREAD_POINTS = 18          # Spread máx = 1.8 pips. Con TP de ~3-8 pips el
                                 # así que somos estrictos: solo entradas baratas. Si nunca opera y tu
                                 # broker tiene spread mayor, súbelo (pero el scalp puro necesita spread bajo).
 LOG_FILE         = "eurusd_scalping_bot.log"
+
+# ─── MOTOR COMPARTIDO (bot_engine) — claves añadidas al unificar el motor ───────
+ORDER_COMMENT_PREFIX = "EURs"                         # prefijo del comentario de orden MT5 (≤31 chars)
+BOT_LABEL            = "EUR/USD Scalping Bot"          # texto del banner de arranque
+USE_MACRO_CONTEXT    = False
+MACRO_TF_LABEL       = "H1"               # sin efecto mientras USE_MACRO_CONTEXT=False
+REQUIRE_MACRO_ALIGNMENT = False           # sin veto macro (no aplica en EUR/USD)
+SR_TOLERANCE_FLOOR   = 0.0    # sin piso en forex (escala en decimales)
+PSYCH_LEVEL_COUNT    = 6      # nº de niveles psicológicos a cada lado del precio

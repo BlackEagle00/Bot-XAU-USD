@@ -4,7 +4,7 @@ Maneja inicialización, login, validación de símbolo y reconexión.
 """
 import time
 import MetaTrader5 as mt5
-from logger_config import logger
+from .logger_config import logger
 from config import MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, SYMBOL, MAX_SPREAD_POINTS
 
 

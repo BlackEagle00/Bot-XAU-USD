@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import MetaTrader5 as mt5
 import numpy as np
 import pandas as pd
-from logger_config import logger
+from .logger_config import logger
 from config import (
     SYMBOL, PRIMARY_TF, TREND_TF, HIGHER_TF,
     CANDLES_PRIMARY, CANDLES_TREND, CANDLES_HIGHER

@@ -171,3 +171,14 @@ MAX_SLIPPAGE     = 30          # Mayor tolerancia al slippage en swing
 MAX_SPREAD_POINTS = 50         # Spread máx permitido (en puntos) = 5 pips en EURUSD. Normal ≈ 1-2 pips;
                                # bloquea ciclos cuando el spread se dispara (noticias, baja liquidez).
 LOG_FILE         = "eurusd_bot.log"
+
+# ─── MOTOR COMPARTIDO (bot_engine) — claves añadidas al unificar el motor ───────
+ORDER_COMMENT_PREFIX = "EUR"                          # prefijo del comentario de orden MT5 (≤31 chars)
+BOT_LABEL            = "EUR/USD Swing Trading Bot"     # texto del banner de arranque
+# EUR/USD NO usa contexto macro (no puntúa ni veta por el TF superior):
+USE_MACRO_CONTEXT    = False
+MACRO_TF_LABEL       = "D1"               # sin efecto mientras USE_MACRO_CONTEXT=False
+REQUIRE_MACRO_ALIGNMENT = False           # sin veto macro (no aplica en EUR/USD)
+# S/R: SR_CLUSTER_ATR_MULT y PSYCH_LEVEL_STEP ya están definidos arriba; faltan:
+SR_TOLERANCE_FLOOR   = 0.0    # sin piso en forex (escala en decimales)
+PSYCH_LEVEL_COUNT    = 6      # nº de niveles psicológicos a cada lado del precio
