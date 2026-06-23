@@ -27,6 +27,18 @@ las posiciones que él mismo abrió (filtra por su Magic).
 > El motor está **copiado**, no compartido: una mejora en un bot hay que replicarla a mano
 > en los otros. Esto es intencional para poder afinar cada bot por separado.
 
+### 📖 Guías detalladas por instrumento
+
+Para el detalle de cada bot (cómo se ejecuta, archivos, proceso ciclo por ciclo, filtros,
+riesgo y tabla de valores afinados de **swing** y **scalping**):
+
+| Guía | Cubre |
+|---|---|
+| [**GUIA_GOLD.md**](docs/GUIA_GOLD.md) | Oro (XAU/USD): `xauusd_bot/` swing + `xauusd_scalping_bot/` scalp |
+| [**GUIA_EURUSD.md**](docs/GUIA_EURUSD.md) | EUR/USD: `eurusd_bot/` swing + `eurusd_scalping_bot/` scalp |
+
+Este README es el panorama general; las guías entran en el detalle de cada instrumento.
+
 ---
 
 ## Requisitos
@@ -36,25 +48,35 @@ las posiciones que él mismo abrió (filtra por su Magic).
 | Windows | 10 / 11 |
 | Python | 3.9+ |
 | MetaTrader 5 (terminal) | Cualquier broker con XAUUSD y EURUSD |
-| Internet | Recomendado (para el filtro de noticias) |
+| Internet | Recomendado (filtro de noticias y notificaciones Telegram) |
 
 ---
 
 ## Instalación
 
 ```bash
-pip install -r xauusd_bot/requirements.txt   # las mismas dependencias para los 4 bots
+pip install -r requirements.txt   # las mismas dependencias para los 4 bots
 ```
 
 ### Credenciales (archivo `.env`)
 
 Las credenciales **no van en `config.py`**: se leen de un archivo `.env` en la raíz del
-proyecto (vía `python-dotenv`). Crea `.env` con:
+proyecto (vía `python-dotenv`). Copia la plantilla y rellénala (`.env` está en `.gitignore`):
+
+```bash
+cp .env.example .env
+```
+
+Contenido de `.env`:
 
 ```env
 MT5_LOGIN=0            # 0 = usa la cuenta ya abierta en el terminal MT5
 MT5_PASSWORD=
 MT5_SERVER=
+
+# Notificaciones Telegram (opcional; déjalo vacío para desactivarlas)
+TELEGRAM_BOT_TOKEN=    # te lo da @BotFather al crear el bot
+TELEGRAM_CHAT_ID=      # tu id numérico (háblale a @userinfobot)
 ```
 
 Si dejas `MT5_LOGIN=0`, el bot usa la cuenta que ya tengas con sesión iniciada en MT5
@@ -169,9 +191,10 @@ score. Ventana: `ORDERFLOW_LOOKBACK_SECS` (300 s swing / 120 s scalp).
 ### 🌐 Inter-mercado: índice dólar (DXY) — `USE_INTERMARKET`
 El oro y el EUR/USD son **inversos al dólar**: si el DXY baja, hay viento de cola alcista.
 El bot mide la tendencia del DXY y sesga el score (`INTERMARKET_INVERSE=True`).
-> ⚠️ **Verifica el símbolo en tu broker.** Por defecto `INTERMARKET_SYMBOL="USDX"`. Si tu
-> broker no lo tiene (o lo llama distinto), busca en *Market Watch → Símbolos* y ajusta el
-> nombre. Si no existe, el factor **se desactiva solo** (sin error).
+> ⚠️ **Símbolo del índice dólar.** En la cuenta XM de referencia es `USDX-SEP26` (contrato de
+> **futuros trimestral**, "US Dollar Index"), ya configurado en `INTERMARKET_SYMBOL` de los 4 bots.
+> Al vencer (~2026-09-11) hay que cambiar el sufijo al siguiente contrato (p. ej. `USDX-DEC26`).
+> Si el símbolo no existe en tu broker, el factor **se desactiva solo** (sin error).
 
 ### ⚡ ADX (fuerza de tendencia) — `USE_ADX_FILTER`
 Mide si la tendencia tiene fuerza (no su dirección). Si ADX < `ADX_MIN_TREND` el mercado
@@ -184,6 +207,37 @@ trades en la ventana `±NEWS_BLACKOUT_*_MIN` alrededor de eventos de alto impact
 divisas en `NEWS_CURRENCIES`. Módulo: `news_filter.py`.
 > Si no hay internet, por defecto **NO bloquea** (`NEWS_FAIL_OPEN=True`) para no congelar el
 > bot. Pon `False` si prefieres no operar a ciegas cuando el calendario no carga.
+
+---
+
+## Notificaciones por Telegram (opcional) — `USE_TELEGRAM`
+
+Te avisa al **celular** de la actividad del bot sin tener que mirar la consola ni
+conectarte por escritorio remoto. Módulo: `telegram_notifier.py` (solo stdlib, igual que
+el filtro de noticias: envía en un hilo aparte para no frenar el loop y **degrada con
+elegancia** si Telegram falla).
+
+Avisa cuando el bot:
+- 🟢 **arranca** / 🔴 **se detiene** (con símbolo, temporalidades y balance),
+- 🟢 **abre** una operación (ticket, lote, entry, SL, TP),
+- ✅/🔴 **cierra** una operación por SL/TP o manual, con el **P&L realizado**,
+- ⚠️/✅ **pierde / recupera** la conexión con MT5 (avisa una sola vez, sin spam).
+
+Cada bot manda un **prefijo** para distinguirlo en el mismo chat: `[GOLD swing]`,
+`[GOLD scalp]`, `[EURUSD swing]`, `[EURUSD scalp]`.
+
+**Configuración (una sola vez, sirve para los 4 bots):**
+1. En Telegram habla con **@BotFather** → `/newbot` → copia el **token**.
+2. Habla con **@userinfobot** → copia tu **chat_id** (número).
+3. Escríbele "hola" a **tu** bot (si no, Telegram no le deja enviarte mensajes).
+4. Pon ambos valores en el `.env` (`TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`).
+5. Reinicia los bots.
+
+> Si dejas el token o el chat_id vacíos, las notificaciones **se desactivan solas** (sin
+> error). Para apagarlas a propósito, pon `USE_TELEGRAM = False`. No añade dependencias
+> nuevas (usa `urllib` de la stdlib). La detección de cierres compara los tickets abiertos
+> entre ciclos: un trade que abre y cierra dentro del mismo ciclo puede no notificar el
+> cierre (el de apertura siempre sale).
 
 ---
 
@@ -201,6 +255,7 @@ Todos en `config.py` de cada bot. Valor por defecto entre paréntesis:
 | `USE_ORDERFLOW` | `True` | Suma la presión compra/venta por ticks al score. |
 | `USE_INTERMARKET` | `True` | Suma el sesgo del dólar (DXY) al score. |
 | `USE_NEWS_FILTER` | `True` | Bloquea operar alrededor de noticias de alto impacto. |
+| `USE_TELEGRAM` | `True` | Envía notificaciones al celular (se desactiva sola sin token/chat_id). |
 | `REQUIRE_TREND_ALIGNMENT` | `True` | Solo opera a favor de la tendencia. |
 | `REQUIRE_MACRO_ALIGNMENT` | `True` oro swing / `False` oro scalp | Veta operar contra la tendencia macro (solo oro). |
 | `INTERMARKET_INVERSE` | `True` | El activo se mueve inverso al dólar (oro/EUR). |
@@ -247,7 +302,28 @@ Mantén estos valores **intencionalmente distintos** por instrumento/estilo:
 > Nota cosmética: la consola de Windows (cp1252) puede mostrar `UnicodeEncodeError` por los
 > emojis. El archivo `.log` es UTF-8 y queda perfecto. No afecta al funcionamiento.
 
+> 📖 **¿Empezando?** Cada instrumento tiene su guía detallada (cómo leer el log, los filtros,
+> el riesgo y los valores afinados de sus variantes swing y scalping):
+> [**Guía del ORO**](docs/GUIA_GOLD.md) · [**Guía del EUR/USD**](docs/GUIA_EURUSD.md).
+
 ---
+
+## Estructura del proyecto
+
+```
+Bot-XAU-USD/
+├── run.py              → Lanzador común de los 4 bots
+├── requirements.txt    → Dependencias (canónico; cada bot tiene copia idéntica)
+├── .env.example        → Plantilla de credenciales (copiar a .env)
+├── README.md           → Este panorama general
+├── CLAUDE.md           → Guía para agentes/IA que trabajen el repo
+├── xauusd_bot/         → Bot Oro swing      (ver detalle abajo)
+├── xauusd_scalping_bot/→ Bot Oro scalping
+├── eurusd_bot/         → Bot EUR/USD swing
+├── eurusd_scalping_bot/→ Bot EUR/USD scalping
+├── docs/               → Guías por instrumento, brokers, migración (+ historico/)
+└── backtesting/        → Toolkit de backtesting independiente (no usado por los bots)
+```
 
 ## Archivos de cada bot
 
@@ -263,6 +339,7 @@ Mantén estos valores **intencionalmente distintos** por instrumento/estilo:
 ├── risk_manager.py   → Lote, SL/TP, pérdida diaria, margen
 ├── trade_manager.py  → Abrir/cerrar, break-even, trailing progresivo, anti-dup
 ├── news_filter.py    → Calendario económico (blackout de noticias)
+├── telegram_notifier.py → Notificaciones a Telegram (opcional)
 ├── logger_config.py  → Logs a consola y a archivo .log
 └── requirements.txt  → Dependencias Python
 ```

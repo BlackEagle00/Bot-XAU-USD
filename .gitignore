@@ -44,4 +44,4 @@ htmlcov/
 *.tmp
 *.temp
 
-.claude
+*.claude

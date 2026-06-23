@@ -51,6 +51,10 @@ from trade_manager import (
     open_trade, close_all_trades,
     manage_open_trades, is_too_close_to_existing
 )
+from telegram_notifier import (
+    notify, check_closed_positions,
+    notify_connection_lost, notify_connection_restored,
+)
 
 
 # ─── Estado global del bot ────────────────────────────────────────────────────
@@ -138,7 +142,9 @@ def _run_cycle():
         logger.warning("⚡ Conexión perdida. Reconectando...")
         if not connect(retries=2, delay=3):
             logger.error("No se pudo reconectar. Ciclo omitido.")
+            notify_connection_lost()
             return
+        notify_connection_restored()
 
     # ── 2. Verificar liquidez del mercado ─────────────────────────────────────
     if not is_market_open():
@@ -177,6 +183,9 @@ def _run_cycle():
     # ── 7. Gestionar posiciones ANTES de buscar señales ───────────────────────
     #      (break-even y trailing se ejecutan en cada ciclo)
     manage_open_trades(atr, _symbol_info)
+
+    # Avisar por Telegram las posiciones que se cerraron (SL/TP/manual) desde el ciclo previo
+    check_closed_positions(get_open_positions())
 
     # ── 8. Factores direccionales extra (order-flow + inter-mercado) ──────────
     of_delta = get_orderflow_delta() if USE_ORDERFLOW else None
@@ -336,6 +345,12 @@ def run():
     acc = get_account_info()
     if acc:
         _print_config(acc)
+        notify(
+            f"🟢 Bot iniciado | {SYMBOL} {TF_LABELS} | "
+            f"Balance: {acc.balance:,.2f} {acc.currency}"
+        )
+    else:
+        notify(f"🟢 Bot iniciado | {SYMBOL} {TF_LABELS}")
 
     # ── Loop principal ────────────────────────────────────────────────────────
     logger.info(f"🔄 Loop iniciado (cada {LOOP_INTERVAL}s). Ctrl+C para detener.")
@@ -367,6 +382,11 @@ def run():
     # Si quieres cerrarlas descomenta la siguiente línea:
     # close_all_trades(_symbol_info)
 
+    notify(
+        f"🔴 Bot detenido | Ciclos: {_cycle_num} | "
+        f"Trades en esta sesión: {_trades_today}",
+        block=True,
+    )
     disconnect()
     logger.info(
         f"✅ Bot detenido. Ciclos ejecutados: {_cycle_num} | "

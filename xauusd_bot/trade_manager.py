@@ -30,6 +30,7 @@ from config import (
     TRAIL_LOCK_PCT_MIN, TRAIL_LOCK_PCT_MAX, TRAIL_LOCK_FULL_ATR,
 )
 from data_handler import get_open_positions, get_tick
+from telegram_notifier import notify
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -124,6 +125,10 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
         logger.info(
             f"✅ {action} abierto | Ticket: #{result.order} | Lote: {lot} | "
             f"Entry: {exec_price:.{digits}f} | SL: {sl:.{digits}f} | TP: {tp:.{digits}f}"
+        )
+        notify(
+            f"🟢 {action} abierto #{result.order} {SYMBOL} | Lote {lot} | "
+            f"Entry {exec_price:.{digits}f} | SL {sl:.{digits}f} | TP {tp:.{digits}f}"
         )
         return result.order
 

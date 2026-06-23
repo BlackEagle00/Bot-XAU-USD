@@ -128,7 +128,8 @@ ORDERFLOW_MIN_TICKS     = 50
 # EUR/USD es INVERSO al dólar. ⚠ Verifica el símbolo del índice dólar en tu broker;
 #    XM suele usar "USDX". Si no existe, el factor se desactiva solo (sin error).
 USE_INTERMARKET     = True
-INTERMARKET_SYMBOL  = "USDX"
+INTERMARKET_SYMBOL  = "USDX-SEP26"  # Índice dólar (XM, futuro trimestral). Vence ~2026-09-11 → al
+                                    # rolar, cambia el sufijo al siguiente contrato (p.ej. USDX-DEC26).
 INTERMARKET_INVERSE = True
 INTERMARKET_TF      = mt5.TIMEFRAME_H1   # TF del DXY (scalping: H1)
 INTERMARKET_CANDLES = 200
@@ -142,6 +143,20 @@ NEWS_IMPACTS             = ["High"]
 NEWS_BLACKOUT_BEFORE_MIN = 15              # scalp: ventana más corta
 NEWS_BLACKOUT_AFTER_MIN  = 15
 NEWS_FAIL_OPEN           = True
+
+# ─── NOTIFICACIONES TELEGRAM ────────────────────────────────────────────────────
+# Avisa al celular cuando el bot abre/cierra trades, arranca/se detiene o pierde
+# la conexión. El TOKEN y el CHAT_ID se cargan desde .env (NO los pongas aquí).
+# Cómo obtenerlos (una sola vez, sirven para los 4 bots):
+#   1. En Telegram habla con @BotFather → /newbot → te da el TELEGRAM_BOT_TOKEN.
+#   2. Habla con @userinfobot → te da tu TELEGRAM_CHAT_ID (número).
+#   3. Escríbele "hola" a TU propio bot primero; si no, no puede enviarte mensajes.
+#   4. En el .env agrega:  TELEGRAM_BOT_TOKEN=...   y   TELEGRAM_CHAT_ID=...
+# Si falta el token o el chat_id, las notificaciones se desactivan solas (sin error).
+USE_TELEGRAM       = True
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID', '')
+TELEGRAM_PREFIX    = "[EURUSD scalp]"   # etiqueta para distinguir este bot en el chat
 
 # ─── DATOS ─────────────────────────────────────────────────────────────────────
 CANDLES_PRIMARY  = 1500   # 1500 velas M5 ≈ 5.2 días (suficiente para EMA200 estable)

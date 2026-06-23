@@ -39,13 +39,29 @@ have drifted on purpose. Intentional divergences to remember:
     a tick-delta proxy).
   - **Inter-market DXY** (`USE_INTERMARKET`; `data_handler.get_intermarket_bias`, scored via
     `SCORE_WEIGHTS["intermarket"]`, `INTERMARKET_INVERSE=True`) — dollar-index bias, inverse for gold/EUR.
-    `INTERMARKET_SYMBOL` defaults to `"USDX"`; if the broker lacks it the factor degrades to no-op.
+    `INTERMARKET_SYMBOL` is `"USDX-SEP26"` on the XM account (a quarterly **futures** contract — roll the
+    suffix when it expires ~2026-09-11); if the broker lacks the symbol the factor degrades to no-op.
   - **News filter** (`USE_NEWS_FILTER`; new per-bot module **`news_filter.py`**) — blackout gate around
     high-impact calendar events (ForexFactory weekly JSON; fail-open when offline via `NEWS_FAIL_OPEN`).
+  - **Telegram notifications** (`USE_TELEGRAM`; new per-bot module **`telegram_notifier.py`**) — pushes
+    bot start/stop, trade open, trade close (SL/TP/manual, with realized P&L), and MT5 connection
+    lost/restored to a Telegram chat. Stdlib `urllib` (no new dep), sends off a daemon thread, fail-open;
+    **self-disables** if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (from `.env`) are empty. Each bot tags
+    messages with its own `TELEGRAM_PREFIX` (`[GOLD swing]`, `[GOLD scalp]`, `[EURUSD swing]`,
+    `[EURUSD scalp]`). The module body is **identical across all 4** (it reads `SYMBOL`/`TELEGRAM_*` from
+    each bot's own `config.py`) — only the prefix value differs.
 
-The repo root also contains a separate, unrelated generic backtesting framework
+The `backtesting/` folder holds a separate, unrelated generic backtesting framework
 (`trading_backtest_framework.py`, `metatrader_data_loader.py`, `ejemplo_completo_backtest.py`) that is
 not wired into any bot — treat it as a standalone toolkit, not part of the bots' runtime path.
+
+Repo layout (after the structural cleanup): bot engines stay as flat-import folders at the root
+(`<bot>/main.py` etc., run with `cwd` set to the bot folder — do **not** move files inside them or the
+imports break); reference docs live in `docs/` (per-instrument guides `docs/GUIA_GOLD.md` /
+`docs/GUIA_EURUSD.md`, broker/migration notes, and `docs/historico/` for dated one-off reports); the
+backtesting toolkit lives in `backtesting/`. Root keeps only `run.py`, `requirements.txt` (canonical;
+each bot still ships an identical copy so it can `pip install` from its own folder), `.env.example`,
+`README.md` and this file.
 
 **README.md is current** — it was rewritten alongside this round of features and now documents all 4
 variants, the scoring/gates, the extra directional factors (ADX / order-flow / DXY / news), and every
@@ -66,19 +82,20 @@ Stop with Ctrl+C — it finishes the current cycle, then disconnects cleanly. Op
 MT5 (not closed) on shutdown; `close_all_trades()` in `trade_manager.py` exists but is commented out in
 `main.run()` if that behavior is ever wanted.
 
-There is no test suite, linter, or build step in this repo. `validate_changes.py` and
-`install_and_validate.sh` (repo root) are ad-hoc scripts that grep `xauusd_bot/config.py` for specific
-expected values (e.g. `MIN_SIGNAL_SCORE.*5\.0`) to confirm a past round of tuning was applied — they are
-not general-purpose tests and will go stale as config values change.
+There is no test suite, linter, or build step in this repo. (Two ad-hoc validator scripts,
+`validate_changes.py` and `install_and_validate.sh`, plus a `CAMBIOS_RECOMENDADOS.py` notes file, used
+to live at the root; they were removed in the structural cleanup as stale — recover from git history if
+ever needed. To smoke-test a change, `python -m py_compile <bot>/*.py` per folder.)
 
 ## Configuration
 
 All tunable parameters live in `xauusd_bot/config.py`. MT5 credentials (`MT5_LOGIN`, `MT5_PASSWORD`,
-`MT5_SERVER`) are loaded from a `.env` file via `python-dotenv` — never hardcode them in `config.py`.
+`MT5_SERVER`) — and the optional Telegram secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) — are loaded
+from a `.env` file via `python-dotenv`; never hardcode them in `config.py`.
 If `MT5_LOGIN` is left at 0, the bot uses whatever account is already logged into the MT5 terminal.
 
-`SYMBOL` may need adjusting per broker (`XAUUSD`, `GOLD`, `XAUUSDm`, etc.) — see `GUIA_BROKERS_COLOMBIA.md`
-and `MIGRACION_A_XM.md` for broker-specific notes (this project has been evaluated against ICMarkets,
+`SYMBOL` may need adjusting per broker (`XAUUSD`, `GOLD`, `XAUUSDm`, etc.) — see `docs/GUIA_BROKERS_COLOMBIA.md`
+and `docs/MIGRACION_A_XM.md` for broker-specific notes (this project has been evaluated against ICMarkets,
 Pepperstone, XM, FP Markets). Account currently in use is an **XM demo** (`XMGlobal-MT5`), and gold
 trades on this broker under `SYMBOL="GOLD"`.
 
@@ -109,9 +126,11 @@ Each variant is tuned for its symbol+mode; keep these *intentionally different* 
 | `INTERMARKET_TF` / `intermarket` wt | H4 / 0.8 | H1 / 0.4 | H4 / 0.8 | H1 / 0.3 |
 | `NEWS_BLACKOUT` ±min / `NEWS_CURRENCIES` | 30 / USD | 15 / USD | 30 / USD,EUR | 15 / USD,EUR |
 
-All four `USE_*` factor flags (`USE_PROGRESSIVE_TRAIL`, `USE_ADX_FILTER`, `USE_ORDERFLOW`,
-`USE_INTERMARKET`, `USE_NEWS_FILTER`) default to `True`; flip any to `False` to disable that factor
-without touching the rest. `INTERMARKET_SYMBOL="USDX"` must exist on the broker or the factor self-disables.
+The `USE_*` factor flags (`USE_PROGRESSIVE_TRAIL`, `USE_ADX_FILTER`, `USE_ORDERFLOW`,
+`USE_INTERMARKET`, `USE_NEWS_FILTER`, plus `USE_TELEGRAM` for notifications) default to `True`; flip any
+to `False` to disable that factor without touching the rest (`USE_TELEGRAM` also self-disables when its
+`.env` creds are absent). `INTERMARKET_SYMBOL="USDX-SEP26"` (XM quarterly dollar-index future — roll the
+suffix at expiry ~2026-09-11) must exist on the broker or the factor self-disables.
 
 Note: total *correlated* risk ≈ `MAX_OPEN_TRADES × RISK_PER_TRADE` because `REQUIRE_TREND_ALIGNMENT`
 forces every open trade the same direction. Gold swing is therefore at ~5% (5 × 1%). To raise the trade
@@ -219,3 +238,11 @@ Cross-cutting concerns:
   reflects the current *signal*, not a new trade. New entries are gated by anti-dup + the risk manager.
 - Broker compatibility quirks (filling mode bitmask, `trade_stops_level` minimum SL/TP distance, lot
   step/min/max) are handled defensively in `trade_manager.py` and `risk_manager.py` since brokers differ.
+- **Telegram notifications** (`telegram_notifier.py`) run as a side-channel to logging, hooked in three
+  spots: `trade_manager.open_trade()` fires `notify()` on a filled order; `main.run()` sends start/stop;
+  and `main._run_cycle()` calls `notify_connection_lost/restored()` around reconnect. Trade *closes* are
+  **not** sent from `close_trade()` (it's effectively unused in the loop) — instead
+  `check_closed_positions(get_open_positions())` runs each cycle (right after `manage_open_trades`) and
+  detects vanished tickets, querying `mt5.history_deals_get(position=...)` for the realized P&L. All
+  sends are best-effort daemon threads (the shutdown message uses `block=True` so it isn't cut off); the
+  whole module is a no-op unless `.env` creds are set, so it never affects trading.
