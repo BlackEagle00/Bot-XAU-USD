@@ -374,6 +374,8 @@ def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
 
     Reglas:
       • Solo mueve el SL en la dirección FAVORABLE (nunca lo empeora)
+      • Solo lo mueve a la entrada o mejor: mientras el trade va en pérdida se
+        respeta el SL inicial (SL_ATR_MULT), no se aprieta por ruido
       • Respeta la distancia mínima exigida por el broker (trade_stops_level)
       • Se ejecuta en CADA ciclo → el trail es continuo
     """
@@ -390,8 +392,9 @@ def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
             candidate, lock_pct, driver = lock[0], lock[1], "LOCK"
 
         new_sl = round(candidate, digits)
-        # Mover solo si mejora el SL actual y es seguro
-        if new_sl > pos.sl and (pos.price_current - new_sl) >= min_dist:
+        # Mover solo si mejora el SL actual, es seguro y ya asegura la entrada o más
+        # (el trailing no aprieta el SL inicial mientras el trade va en pérdida)
+        if new_sl > pos.sl and new_sl >= pos.price_open and (pos.price_current - new_sl) >= min_dist:
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
                 _log_trail("BUY", pos, new_sl, driver, lock_pct, digits)
                 return True
@@ -403,7 +406,7 @@ def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
             candidate, lock_pct, driver = lock[0], lock[1], "LOCK"
 
         new_sl = round(candidate, digits)
-        if new_sl < pos.sl and (new_sl - pos.price_current) >= min_dist:
+        if new_sl < pos.sl and new_sl <= pos.price_open and (new_sl - pos.price_current) >= min_dist:
             if _modify_sl(pos.ticket, new_sl, pos.tp, digits):
                 _log_trail("SELL", pos, new_sl, driver, lock_pct, digits)
                 return True

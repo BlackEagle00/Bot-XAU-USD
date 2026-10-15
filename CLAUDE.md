@@ -91,7 +91,8 @@ Stop with Ctrl+C — it finishes the current cycle, then disconnects cleanly. Op
 MT5 (not closed) on shutdown; `close_all_trades()` in `trade_manager.py` exists but is commented out in
 `core.run()` if that behavior is ever wanted.
 
-There is no test suite, linter, or build step in this repo. (Two ad-hoc validator scripts,
+Engine tests: `python tests/test_engine.py` (plain asserts, no pytest, no MT5 terminal needed — lot sizing,
+daily-loss latch, trailing-never-tightens-at-a-loss, server time). No linter or build step. (Two ad-hoc validator scripts,
 `validate_changes.py` and `install_and_validate.sh`, plus a `CAMBIOS_RECOMENDADOS.py` notes file, used
 to live at the root; they were removed in the structural cleanup as stale — recover from git history if
 ever needed. To smoke-test a change, `python -m py_compile <bot>/*.py` per folder.)
@@ -103,6 +104,13 @@ All tunable parameters live in each bot's own `config.py` (e.g. `xauusd_bot/conf
 `MT5_SERVER`) — and the optional Telegram secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) — are loaded
 from a `.env` file via `python-dotenv`; never hardcode them in `config.py`.
 If `MT5_LOGIN` is left at 0, the bot uses whatever account is already logged into the MT5 terminal.
+**Demo-only guard:** `connection._account_allowed()` refuses to start on a non-demo account unless `.env`
+has `ALLOW_LIVE_TRADING=1`. Setting `$env:MT5_LOGIN='0'` in the shell overrides `.env` (dotenv never
+overrides existing env vars) — handy to test on the demo already open in the terminal.
+
+**Time:** MT5 stores times as *server* time encoded as epoch. Never use local `datetime.now()` for MT5
+queries (`copy_ticks_range`, `history_deals_get`) — use `data_handler.server_now()`. The trading "day"
+(daily P&L, daily-loss latch) is the broker server's day.
 
 `SYMBOL` may need adjusting per broker (`XAUUSD`, `GOLD`, `XAUUSDm`, etc.) — see `docs/GUIA_BROKERS_COLOMBIA.md`
 and `docs/MIGRACION_A_XM.md` for broker-specific notes (this project has been evaluated against ICMarkets,
@@ -208,9 +216,14 @@ flow:
      full cascade with `REQUIRE_MACRO_ALIGNMENT=True`, trades against that daily trend are vetoed to HOLD.
      In `xauusd_scalping_bot/` it's H1 (`macro_tf=0.5`, `REQUIRE_MACRO_ALIGNMENT=False`) — nudge only, no
      veto. The EURUSD bots have no macro scoring at all.
-6. **`risk_manager.py`** — gates trade entry (`can_open_trade`): daily loss limit, max simultaneous
-   trades, free margin floor. Also computes lot size from `RISK_PER_TRADE` × balance against ATR-based
-   SL distance, and computes SL/TP prices from `SL_ATR_MULT`/`TP_ATR_MULT`.
+6. **`risk_manager.py`** — gates trade entry (`can_open_trade`): daily loss limit (latched: once hit,
+   blocked until the next server day), max simultaneous trades (a failed `positions_get` blocks), free
+   margin floor. Computes SL/TP from `SL_ATR_MULT`/`TP_ATR_MULT`, then the **dynamic lot** (`lot_plan`)
+   from `RISK_PER_TRADE` × capital (`min(balance, equity)`: open losses shrink it, a growing balance
+   raises it) against the **final** SL distance, floored to `volume_step`, capped at `MAX_LOT`; returns 0
+   (trade skipped) when even the minimum lot would risk more than `RISK_PER_TRADE` (e.g. a $100 demo
+   can't take gold swing). `core._log_lot_capacity` logs "💰 Capital … → lote … | siguiente lote con
+   capital ≥ X" when the balance changes and every 20 cycles. Gold bots' `MAX_DAILY_LOSS_PCT` is 0.10.
 7. **`trade_manager.py`** — sends/closes MT5 orders, and on *every* cycle (before any new entry is
    considered) runs break-even (`update_breakeven`) and trailing-stop (`update_trailing_stop`) on all
    open positions belonging to this bot (filtered by `MAGIC_NUMBER`, not by all positions on the symbol).
@@ -222,6 +235,9 @@ flow:
    resumes next cycle. **BE+ never retroactively protects a position still below its trigger** — it only
    acts once the profit threshold is crossed, so positions opened before a code/config change need a
    bot restart and enough profit before they get protected.
+   BE+/trailing run **before** the spread and ATR-minimum filters in `_run_cycle` (those only block new
+   entries), and the trailing only ever moves the SL to entry-or-better — while a trade is at a loss
+   the initial `SL_ATR_MULT` stop is kept (scalp's 1.0×ATR trail used to tighten it on the first tick).
    The trailing stop (`update_trailing_stop`) takes the *more protective* of two SLs each cycle: the
    classic ATR trail (`price ∓ TRAILING_ATR_MULT×ATR`, lets winners breathe) and the **progressive lock**
    (`_progressive_lock_sl`) — once open profit passes `TRAIL_LOCK_START_ATR` it secures a growing fraction

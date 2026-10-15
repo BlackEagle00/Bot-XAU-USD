@@ -40,6 +40,10 @@ def _fetch_calendar():
         logger.warning(f"📰 No se pudo cargar el calendario económico: {exc}")
         return None
 
+    if not isinstance(data, list):      # p.ej. un JSON de error/rate-limit
+        logger.warning("📰 Respuesta del calendario inválida (no es una lista).")
+        return None
+
     events = []
     for it in data:
         try:
@@ -54,6 +58,9 @@ def _fetch_calendar():
             ))
         except Exception:
             continue
+    if not events:                      # una semana real siempre trae eventos
+        logger.warning("📰 El calendario no trajo eventos válidos.")
+        return None
     logger.info(f"📰 Calendario económico cargado: {len(events)} eventos esta semana.")
     return events
 

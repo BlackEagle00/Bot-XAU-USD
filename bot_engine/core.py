@@ -46,7 +46,7 @@ from .patterns import analyze_patterns
 from .signals import generate_signal
 from .news_filter import in_news_blackout
 from .risk_manager import (
-    calculate_lot, calculate_sl_tp, check_risk_reward,
+    calculate_lot, lot_plan, calculate_sl_tp, check_risk_reward,
     can_open_trade, get_total_daily_pnl
 )
 from .trade_manager import (
@@ -64,6 +64,7 @@ _running      = True    # Controla el loop principal
 _cycle_num    = 0       # Contador de ciclos ejecutados
 _trades_today = 0       # Trades abiertos en la sesión actual
 _symbol_info  = None    # Cache de mt5.SymbolInfo (se carga una vez al inicio)
+_last_balance = None    # Balance del último chequeo de lote dinámico
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -135,7 +136,7 @@ def _run_cycle():
     Ejecuta un ciclo completo de análisis y ejecución.
     Toda la lógica de trading vive aquí.
     """
-    global _cycle_num, _trades_today
+    global _cycle_num, _trades_today, _last_balance
 
     _cycle_num += 1
 
@@ -148,12 +149,7 @@ def _run_cycle():
             return
         notify_connection_restored()
 
-    # ── 2. Verificar liquidez del mercado ─────────────────────────────────────
-    if not is_market_open():
-        logger.debug("🕐 Mercado cerrado o spread alto. Saltando ciclo.")
-        return
-
-    # ── 3. Obtener tick actual ────────────────────────────────────────────────
+    # ── 2. Obtener tick actual ────────────────────────────────────────────────
     tick = get_tick()
     if tick is None:
         return
@@ -176,18 +172,28 @@ def _run_cycle():
         if USE_MACRO_CONTEXT and data.get("higher") is not None else None
     )
 
-    # ── 6. Filtro de volatilidad (ATR mínimo) ─────────────────────────────────
+    # ── 6. Gestionar posiciones ANTES de cualquier filtro de entrada ──────────
+    #      (break-even y trailing corren en cada ciclo, aunque el spread esté
+    #       alto o el mercado plano: esos filtros solo frenan entradas NUEVAS)
     atr = ind_primary.get("atr")
-    if atr is None or atr < ATR_VOLATILITY_MIN:
-        logger.debug(f"ATR {atr} < mínimo {ATR_VOLATILITY_MIN}. Mercado plano, sin operar.")
-        return
-
-    # ── 7. Gestionar posiciones ANTES de buscar señales ───────────────────────
-    #      (break-even y trailing se ejecutan en cada ciclo)
-    manage_open_trades(atr, _symbol_info)
+    if atr is not None:
+        manage_open_trades(atr, _symbol_info)
+        # Lote dinámico: re-evaluar con el saldo cuando cambia el balance y cada 20 ciclos
+        acc = get_account_info()
+        if acc and (acc.balance != _last_balance or _cycle_num % 20 == 0):
+            _last_balance = acc.balance
+            _log_lot_capacity(acc, tick, atr)
 
     # Avisar por Telegram las posiciones que se cerraron (SL/TP/manual) desde el ciclo previo
     check_closed_positions(get_open_positions())
+
+    # ── 7. Filtros de entrada: liquidez (spread) y volatilidad (ATR mínimo) ───
+    if not is_market_open():
+        logger.debug("🕐 Mercado cerrado o spread alto. Sin entradas nuevas.")
+        return
+    if atr is None or atr < ATR_VOLATILITY_MIN:
+        logger.debug(f"ATR {atr} < mínimo {ATR_VOLATILITY_MIN}. Mercado plano, sin operar.")
+        return
 
     # ── 8. Factores direccionales extra (order-flow + inter-mercado) ──────────
     of_delta = get_orderflow_delta() if USE_ORDERFLOW else None
@@ -206,6 +212,19 @@ def _run_cycle():
     # ── 10. Resumen periódico ─────────────────────────────────────────────────
     if _cycle_num % 20 == 0:
         _print_status()
+
+
+def _log_lot_capacity(acc, tick, atr: float):
+    """Qué lote permite el capital de hoy con el SL actual y cuánto falta para subirlo."""
+    sl, _ = calculate_sl_tp("BUY", tick.ask, atr, _symbol_info)
+    sl_dist = tick.ask - sl
+    lot, need = lot_plan(acc, _symbol_info, sl_dist)
+    nxt = (f"siguiente lote con capital ≥ {need:,.2f}" if need is not None
+           else "lote máximo alcanzado")
+    logger.info(
+        f"💰 Capital {min(acc.balance, acc.equity):,.2f} (riesgo {RISK_PER_TRADE*100:.1f}%) → "
+        f"lote {lot if lot > 0 else 'ninguno: no cabe el mínimo'} con SL {sl_dist:.2f} | {nxt}"
+    )
 
 
 def _try_open_trade(signal: dict, price: float, tick, atr: float):
@@ -250,11 +269,13 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float):
         logger.info(f"🚫 Trade {action} descartado: R:R real {rr:.2f} < mínimo {MIN_RR}")
         return
 
-    # E. Calcular lote basado en el balance actual
+    # E. Calcular lote con la distancia REAL del SL (el broker puede haberla ampliado)
     acc = get_account_info()
     if acc is None:
         return
-    lot = calculate_lot(acc, _symbol_info, atr)
+    lot = calculate_lot(acc, _symbol_info, abs(exec_price - sl))
+    if lot <= 0:
+        return
 
     # F. Log previo a la ejecución
     logger.info(

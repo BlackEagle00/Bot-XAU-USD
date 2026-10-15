@@ -2,7 +2,7 @@
 Obtención y preprocesamiento de datos de mercado desde MT5.
 """
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import MetaTrader5 as mt5
 import numpy as np
 import pandas as pd
@@ -65,6 +65,19 @@ def get_tick() -> Optional[mt5.Tick]:
     return tick
 
 
+def server_now() -> Optional[datetime]:
+    """
+    Hora actual del SERVIDOR del broker, lista para las consultas de MT5.
+    MT5 guarda los tiempos en hora del servidor codificada como epoch UTC; usar
+    datetime.now() local desplaza las consultas tantas horas como la diferencia
+    entre tu PC y el servidor (p.ej. UTC-5 vs UTC+3 → 8 h de ticks viejos).
+    """
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None or not tick.time:
+        return None
+    return datetime.fromtimestamp(tick.time, tz=timezone.utc)
+
+
 def get_current_price() -> Optional[float]:
     """Retorna el precio mid actual."""
     tick = get_tick()
@@ -109,7 +122,9 @@ def get_orderflow_delta() -> Optional[float]:
     """
     from config import ORDERFLOW_LOOKBACK_SECS, ORDERFLOW_MIN_TICKS
 
-    t_to   = datetime.now()
+    t_to = server_now()
+    if t_to is None:
+        return None
     t_from = t_to - timedelta(seconds=ORDERFLOW_LOOKBACK_SECS)
     try:
         ticks = mt5.copy_ticks_range(SYMBOL, t_from, t_to, mt5.COPY_TICKS_ALL)

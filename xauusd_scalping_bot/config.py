@@ -26,7 +26,7 @@ MT5_PASSWORD = os.getenv('MT5_PASSWORD', '')               # Contraseña de la c
 MT5_SERVER   = os.getenv('MT5_SERVER', '')                 # Servidor del broker
 
 # ─── SÍMBOLO ───────────────────────────────────────────────────────────────────
-SYMBOL       = "GOLD"      # Puede variar por broker: GOLD, XAUUSD, XAUUSDm.
+SYMBOL       = "XAUUSD"      # Puede variar por broker: GOLD, XAUUSD, XAUUSDm.
 MAGIC_NUMBER = 20260621    # ID único — distinto a Oro swing (…618) y a los EUR/USD (…619/620)
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ SR_24H_CANDLES = 288       # 288 velas M5 = 24h (rango del día en indicators.py
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
 MAX_OPEN_TRADES     = 3        # Con REQUIRE_TREND_ALIGNMENT todas van en la misma dirección
-MAX_DAILY_LOSS_PCT  = 0.05     # 5% pérdida diaria → detener
+MAX_DAILY_LOSS_PCT  = 0.1     # 10% pérdida diaria → detener
 # ── SL/TP realistas para scalping de ORO ──────────────────────────────────────
 # El ATR de M5 en oro es pequeño ($1-4). SL ajustado, pero TP con R:R sólido (2:1)
 # para que el spread del oro no destruya la estadística (a diferencia de EUR/USD,
@@ -180,7 +180,7 @@ CANDLES_HIGHER   = 500    # 500 velas H1 ≈ 20 días de contexto
 # ─── BOT ───────────────────────────────────────────────────────────────────────
 LOOP_INTERVAL    = 15           # 15s entre ciclos: reaccionar rápido dentro de la vela M5
 MAX_SLIPPAGE     = 15            # Menor tolerancia: en scalping el slippage pesa más sobre el TP
-MAX_SPREAD_POINTS = 70          # Spread máx (en puntos). El oro en XM ≈ 50-70 normal; antes el swing
+MAX_SPREAD_POINTS = 80          # Spread máx (en puntos). El oro en XM ≈ 50-70 normal; antes el swing
                                 # necesitó 80 para operar. 70 es algo más exigente (protege el TP corto)
                                 # sin bloquear todo. Si NUNCA opera, súbelo; si quieres entradas más
                                 # baratas, bájalo (pero el oro rara vez baja de ~50).

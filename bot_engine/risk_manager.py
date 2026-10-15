@@ -2,7 +2,7 @@
 Gestión de Riesgo — XAU/USD Scalping Bot
 
 Responsabilidades:
-  • Calcular tamaño de lote basado en balance y ATR (Wilder)
+  • Lote dinámico: capital = min(balance, equity) y distancia real del SL
   • Calcular precios de Stop Loss y Take Profit en precio absoluto
   • Verificar límite de pérdida diaria (realizados + no realizados)
   • Validar todas las condiciones antes de abrir una operación
@@ -16,8 +16,9 @@ Fórmula de lote para XAUUSD (cuenta USD):
     → Valor del SL por lote = 225 × $1.00 = $225
     → Lote = $100 / $225 = 0.44 lotes
 """
+import math
 import MetaTrader5 as mt5
-from datetime import datetime, date
+from datetime import timedelta
 from typing import Tuple
 
 from .logger_config import logger
@@ -26,48 +27,66 @@ from config import (
     RISK_PER_TRADE, MAX_OPEN_TRADES, MAX_DAILY_LOSS_PCT,
     SL_ATR_MULT, TP_ATR_MULT, MIN_LOT, MAX_LOT, MIN_RR
 )
-from .data_handler import get_open_positions, get_account_info
+from .data_handler import get_open_positions, get_account_info, server_now
+
+_halt_day = None    # día (hora servidor) en que se tocó el límite diario → bloquea hasta el siguiente
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAMAÑO DE LOTE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def calculate_lot(account, symbol_info, atr: float) -> float:
+def lot_plan(account, symbol_info, sl_distance: float) -> Tuple[float, float]:
     """
-    Calcula el lote óptimo para arriesgar exactamente RISK_PER_TRADE % del balance.
+    Lote dinámico: arriesga como MÁXIMO RISK_PER_TRADE % del capital, y dice cuánto
+    capital hace falta para el siguiente escalón de lote. No registra nada (se llama cada ciclo).
 
-    Usa los valores reales del símbolo (trade_tick_size y trade_tick_value)
-    para ser preciso con cualquier broker y cuenta.
+    Capital = min(balance, equity): con posiciones en pérdida el lote baja; al crecer
+    el balance, sube solo. sl_distance es la distancia REAL entrada→SL.
+
+    Returns:
+        (lote redondeado HACIA ABAJO al volume_step, o 0.0 si ni el mínimo cabe;
+         capital necesario para el siguiente lote, o None si ya está en el máximo
+         o los datos del símbolo son inválidos)
     """
-    risk_amount = account.balance * RISK_PER_TRADE
+    tick_size  = symbol_info.trade_tick_size   # Mínimo movimiento de precio
+    tick_value = symbol_info.trade_tick_value  # USD por lote por tick
+    if tick_size <= 0 or tick_value <= 0 or sl_distance <= 0:
+        return 0.0, None
 
-    sl_distance = atr * SL_ATR_MULT           # Distancia del SL en precio (USD)
-    tick_size   = symbol_info.trade_tick_size  # Mínimo movimiento de precio
-    tick_value  = symbol_info.trade_tick_value # USD por lote por tick
+    capital          = min(account.balance, account.equity)
+    sl_value_per_lot = sl_distance / tick_size * tick_value
+    max_lot          = min(MAX_LOT, symbol_info.volume_max)
+    lot = min(capital * RISK_PER_TRADE / sl_value_per_lot, max_lot)
 
-    if tick_size <= 0 or tick_value <= 0:
-        logger.warning("tick_size/tick_value inválidos. Usando lote mínimo.")
-        return MIN_LOT
-
-    sl_in_ticks      = sl_distance / tick_size
-    sl_value_per_lot = sl_in_ticks * tick_value
-
-    if sl_value_per_lot <= 0:
-        return MIN_LOT
-
-    lot = risk_amount / sl_value_per_lot
-
-    # Redondear al volume_step del broker (usualmente 0.01)
+    # Hacia abajo al volume_step: redondear hacia arriba arriesgaría de más
     step = symbol_info.volume_step
     if step > 0:
-        lot = round(round(lot / step) * step, 8)
+        lot = math.floor(lot / step + 1e-9) * step
 
-    # Respetar límites del símbolo y de la config
-    lot = max(max(MIN_LOT, symbol_info.volume_min),
-              min(min(MAX_LOT, symbol_info.volume_max), lot))
+    min_lot = max(MIN_LOT, symbol_info.volume_min)
+    if lot < min_lot:
+        lot, next_lot = 0.0, min_lot
+    else:
+        lot, next_lot = round(lot, 8), (lot + step if step > 0 else None)
 
-    return round(lot, 2)
+    if next_lot is None or next_lot > max_lot + 1e-9:
+        return lot, None
+    return lot, next_lot * sl_value_per_lot / RISK_PER_TRADE
+
+
+def calculate_lot(account, symbol_info, sl_distance: float) -> float:
+    """Lote para el trade (ver lot_plan). 0.0 → no operar, con el motivo en el log."""
+    lot, need = lot_plan(account, symbol_info, sl_distance)
+    if lot <= 0:
+        if need is None:
+            logger.warning("tick_size/tick_value/distancia SL inválidos. Trade omitido.")
+        else:
+            logger.warning(
+                f"El lote mínimo no cabe en el riesgo de {RISK_PER_TRADE*100:.1f}% con SL de "
+                f"{sl_distance:.2f}: necesita capital ≥ {need:,.2f}. Trade omitido."
+            )
+    return lot
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -141,8 +160,11 @@ def get_realized_pnl_today() -> float:
     Incluye profit, swap y comisión de los deals de cierre.
     """
     try:
-        today_start = datetime.combine(date.today(), datetime.min.time())
-        deals = mt5.history_deals_get(today_start, datetime.now())
+        now = server_now()      # el "día" es el del servidor, no el de tu PC
+        if now is None:
+            return 0.0
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        deals = mt5.history_deals_get(day_start, now + timedelta(minutes=1))
         if deals is None:
             return 0.0
         return sum(
@@ -165,10 +187,17 @@ def get_total_daily_pnl() -> float:
 def is_daily_loss_exceeded() -> bool:
     """
     Retorna True si la pérdida del día supera MAX_DAILY_LOSS_PCT del balance.
-    Cuando se cumple, registra una advertencia y bloquea nuevas operaciones.
+    Una vez tocado, queda bloqueado hasta el siguiente día del servidor: si no,
+    el bloqueo se levantaba en cuanto el flotante mejoraba unos centavos.
     """
+    global _halt_day
+    now   = server_now()
+    today = now.date() if now else _halt_day    # sin hora del servidor: mantener el bloqueo
+    if _halt_day is not None and _halt_day == today:
+        return True
+
     acc = get_account_info()
-    if acc is None:
+    if acc is None or acc.balance <= 0:
         return False
 
     daily_pnl = get_total_daily_pnl()
@@ -176,6 +205,7 @@ def is_daily_loss_exceeded() -> bool:
     if daily_pnl < 0:
         loss_pct = abs(daily_pnl) / acc.balance
         if loss_pct >= MAX_DAILY_LOSS_PCT:
+            _halt_day = today
             logger.warning(
                 f"⛔ Límite diario alcanzado: P&L hoy = {daily_pnl:.2f} USD "
                 f"({loss_pct*100:.2f}% ≥ {MAX_DAILY_LOSS_PCT*100:.0f}%). "
@@ -207,7 +237,9 @@ def can_open_trade(action: str) -> Tuple[bool, str]:
     if is_daily_loss_exceeded():
         return False, "Límite de pérdida diaria alcanzado"
 
-    # 2. Máximo de trades simultáneos
+    # 2. Máximo de trades simultáneos (un error de lectura NO cuenta como "0 abiertas")
+    if mt5.positions_get(symbol=SYMBOL) is None:
+        return False, f"No se pudieron leer las posiciones abiertas: {mt5.last_error()}"
     open_pos = get_open_positions()
     if len(open_pos) >= MAX_OPEN_TRADES:
         return False, f"Máximo de trades abiertos ({MAX_OPEN_TRADES}) alcanzado"

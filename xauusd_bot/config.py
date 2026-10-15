@@ -19,7 +19,7 @@ MT5_PASSWORD = os.getenv('MT5_PASSWORD', '')               # Contraseña de la c
 MT5_SERVER   = os.getenv('MT5_SERVER', '')                 # Servidor del broker
 
 # ─── SÍMBOLO ───────────────────────────────────────────────────────────────────
-SYMBOL       = "GOLD"    # Puede variar por broker: GOLD, XAUUSD.
+SYMBOL       = "XAUUSD"    # Puede variar por broker: GOLD, XAUUSD.
 MAGIC_NUMBER = 20260618    # ID único para identificar los trades del bot
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ SR_24H_CANDLES = 24        # 24 velas H1 = 24h (rango del día en indicators.py)
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
 MAX_OPEN_TRADES     = 5        # Máx 5 simultáneos: con REQUIRE_TREND_ALIGNMENT todos van en la misma
                                # dirección → 5% de riesgo correlacionado en vez de 4% (más balanceado)
-MAX_DAILY_LOSS_PCT  = 0.05     # 5% pérdida diaria → detener (más conservador en swing)
+MAX_DAILY_LOSS_PCT  = 0.1     # 10% pérdida diaria → detener
 SL_ATR_MULT         = 2.0      # SL más amplio para tolerar movimientos normales de H1
 TP_ATR_MULT         = 4.5      # TP amplio → R:R de 2.25:1
 MIN_RR              = 2.0      # R:R mínimo más exigente en swing

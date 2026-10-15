@@ -2,6 +2,7 @@
 Gestión de conexión con MetaTrader 5.
 Maneja inicialización, login, validación de símbolo y reconexión.
 """
+import os
 import time
 import MetaTrader5 as mt5
 from .logger_config import logger
@@ -38,6 +39,10 @@ def connect(retries: int = 3, delay: int = 5) -> bool:
                 continue
             logger.info(f"✅ Cuenta activa detectada: #{info.login} @ {info.server}")
 
+        if not _account_allowed():
+            mt5.shutdown()
+            return False    # sin reintentos: no es un fallo transitorio
+
         if _validate_symbol():
             _log_account_summary()
             return True
@@ -45,6 +50,28 @@ def connect(retries: int = 3, delay: int = 5) -> bool:
         mt5.shutdown()
 
     logger.critical("❌ No se pudo establecer conexión con MT5.")
+    return False
+
+
+def _account_allowed() -> bool:
+    """
+    Solo permite cuentas DEMO salvo que .env tenga ALLOW_LIVE_TRADING=1.
+    Con MT5_LOGIN=0 el bot opera la cuenta que tenga abierta el terminal: sin
+    este freno, cambiar de cuenta en el terminal mandaría órdenes con dinero real.
+    """
+    acc = mt5.account_info()
+    if acc is None:
+        logger.error("No se pudo leer la cuenta para verificar si es demo.")
+        return False
+    if acc.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO:
+        return True
+    if os.getenv("ALLOW_LIVE_TRADING") == "1":
+        logger.warning(f"⚠  CUENTA REAL #{acc.login} @ {acc.server} — ALLOW_LIVE_TRADING=1, operando con dinero real.")
+        return True
+    logger.critical(
+        f"⛔ La cuenta #{acc.login} @ {acc.server} NO es demo. Por seguridad el bot no opera "
+        f"cuentas reales; pon ALLOW_LIVE_TRADING=1 en .env si de verdad lo quieres."
+    )
     return False
 
 
