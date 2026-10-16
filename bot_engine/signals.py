@@ -33,6 +33,7 @@ from config import (
     USE_ADX_FILTER, ADX_MIN_TREND, INTERMARKET_INVERSE,
     USE_MACRO_CONTEXT, MACRO_TF_LABEL,
 )
+import config as _cfg
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -553,6 +554,12 @@ def generate_signal(
         elif macro_trend == "down" and action == "BUY":
             reasons.append(f"⛔ BUY bloqueado: contexto macro {MACRO_TF_LABEL} BAJISTA fuerte")
             action = "HOLD"
+
+    # Ventas solo con el TF superior bajista (opcional por bot): en el backtest 2023-2026
+    # las ventas contra un macro no bajista perdían (oro swing H1: −0.20R por operación).
+    if getattr(_cfg, "REQUIRE_MACRO_FOR_SELL", False) and action == "SELL" and macro_trend != "down":
+        reasons.append(f"⛔ SELL bloqueado: el contexto {MACRO_TF_LABEL} no es bajista")
+        action = "HOLD"
 
     # ── Filtro anti-agotamiento (extremos de RSI) ─────────────────────────────
     # No abrir NUEVAS entradas donde el movimiento suele agotarse y revertir:

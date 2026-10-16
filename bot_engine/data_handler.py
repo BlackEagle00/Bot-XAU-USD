@@ -38,7 +38,7 @@ def fetch_ohlcv(symbol: str, timeframe: int, count: int) -> Optional[pd.DataFram
     return df[["open", "high", "low", "close", "volume"]].iloc[:-1]
 
 
-def get_market_data() -> Optional[dict]:
+def get_market_data(symbol: str = None) -> Optional[dict]:
     """
     Obtiene datos de mercado para las tres temporalidades configuradas.
 
@@ -46,9 +46,10 @@ def get_market_data() -> Optional[dict]:
         dict con keys "primary", "trend", "higher" → DataFrames
         o None si alguna temporalidad crítica falla.
     """
-    primary = fetch_ohlcv(SYMBOL, PRIMARY_TF, CANDLES_PRIMARY)
-    trend   = fetch_ohlcv(SYMBOL, TREND_TF,   CANDLES_TREND)
-    higher  = fetch_ohlcv(SYMBOL, HIGHER_TF,  CANDLES_HIGHER)
+    symbol  = symbol or SYMBOL
+    primary = fetch_ohlcv(symbol, PRIMARY_TF, CANDLES_PRIMARY)
+    trend   = fetch_ohlcv(symbol, TREND_TF,   CANDLES_TREND)
+    higher  = fetch_ohlcv(symbol, HIGHER_TF,  CANDLES_HIGHER)
 
     if primary is None or trend is None:
         logger.error("No se pudieron obtener datos del mercado (TF primario o tendencia).")
@@ -57,11 +58,12 @@ def get_market_data() -> Optional[dict]:
     return {"primary": primary, "trend": trend, "higher": higher}
 
 
-def get_tick() -> Optional[mt5.Tick]:
-    """Obtiene el tick actual (bid/ask en tiempo real)."""
-    tick = mt5.symbol_info_tick(SYMBOL)
+def get_tick(symbol: str = None) -> Optional[mt5.Tick]:
+    """Obtiene el tick actual (bid/ask en tiempo real). symbol=None → el del config."""
+    symbol = symbol or SYMBOL
+    tick = mt5.symbol_info_tick(symbol)
     if tick is None:
-        logger.warning(f"No se pudo obtener tick para {SYMBOL}")
+        logger.warning(f"No se pudo obtener tick para {symbol}")
     return tick
 
 
@@ -86,18 +88,18 @@ def get_current_price() -> Optional[float]:
     return None
 
 
-def get_symbol_info() -> Optional[mt5.SymbolInfo]:
-    return mt5.symbol_info(SYMBOL)
+def get_symbol_info(symbol: str = None) -> Optional[mt5.SymbolInfo]:
+    return mt5.symbol_info(symbol or SYMBOL)
 
 
 def get_account_info() -> Optional[mt5.AccountInfo]:
     return mt5.account_info()
 
 
-def get_open_positions() -> list:
+def get_open_positions(symbol: str = None) -> list:
     """Retorna todas las posiciones abiertas del bot (filtradas por MAGIC_NUMBER)."""
     from config import MAGIC_NUMBER
-    positions = mt5.positions_get(symbol=SYMBOL)
+    positions = mt5.positions_get(symbol=symbol or SYMBOL)
     if positions is None:
         return []
     return [p for p in positions if p.magic == MAGIC_NUMBER]

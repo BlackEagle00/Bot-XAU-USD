@@ -170,24 +170,25 @@ def calc_vwap(high: pd.Series, low: pd.Series,
 # SOPORTE & RESISTENCIA
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _find_pivots(values: pd.Series, lookback: int, reduce) -> List[float]:
+    """Valores que son el extremo (reduce = np.nanmax/np.nanmin) de su ventana ±lookback.
+    Vectorizado: el bucle con .iloc tardaba ~75 ms por llamada con 1500 velas."""
+    v = values.to_numpy(dtype=float)
+    if len(v) < 2 * lookback + 1:
+        return []
+    ext = reduce(np.lib.stride_tricks.sliding_window_view(v, 2 * lookback + 1), axis=1)
+    mid = v[lookback:len(v) - lookback]
+    return mid[mid == ext].tolist()
+
+
 def _find_pivot_highs(high: pd.Series, lookback: int) -> List[float]:
     """Detecta máximos locales (swing highs)."""
-    pivots = []
-    for i in range(lookback, len(high) - lookback):
-        window = high.iloc[i - lookback: i + lookback + 1]
-        if float(high.iloc[i]) == float(window.max()):
-            pivots.append(float(high.iloc[i]))
-    return pivots
+    return _find_pivots(high, lookback, np.nanmax)
 
 
 def _find_pivot_lows(low: pd.Series, lookback: int) -> List[float]:
     """Detecta mínimos locales (swing lows)."""
-    pivots = []
-    for i in range(lookback, len(low) - lookback):
-        window = low.iloc[i - lookback: i + lookback + 1]
-        if float(low.iloc[i]) == float(window.min()):
-            pivots.append(float(low.iloc[i]))
-    return pivots
+    return _find_pivots(low, lookback, np.nanmin)
 
 
 def _cluster_levels(levels: List[float], tolerance: float = 0.50) -> List[float]:

@@ -23,10 +23,10 @@ SYMBOL       = "XAUUSD"    # Puede variar por broker: GOLD, XAUUSD.
 MAGIC_NUMBER = 20260618    # ID único para identificar los trades del bot
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
-PRIMARY_TF   = mt5.TIMEFRAME_H1    # TF principal de análisis (H1)
-TREND_TF     = mt5.TIMEFRAME_H4    # TF de confirmación de tendencia (H4)
-HIGHER_TF    = mt5.TIMEFRAME_D1    # Contexto macro diario (D1)
-TF_LABELS    = "H1/H4/D1"         # Etiqueta legible para logs
+PRIMARY_TF   = mt5.TIMEFRAME_H4    # TF principal (H4). Backtest 2023-26: H4 PF 1.78 vs H1 PF 1.17
+TREND_TF     = mt5.TIMEFRAME_D1    # TF de confirmación de tendencia (D1)
+HIGHER_TF    = mt5.TIMEFRAME_W1    # Contexto macro semanal (W1)
+TF_LABELS    = "H4/D1/W1"         # Etiqueta legible para logs
 
 # ─── PARÁMETROS DE INDICADORES ─────────────────────────────────────────────────
 EMA_FAST     = 9
@@ -44,10 +44,10 @@ MACD_SIGNAL  = 9
 ATR_PERIOD   = 14
 BB_PERIOD    = 20
 BB_STD       = 2.0
-VWAP_PERIOD  = 24          # 24 velas H1 = VWAP rodante de 24 horas
+VWAP_PERIOD  = 6           # 6 velas H4 = VWAP rodante de 24 horas
 SR_LOOKBACK  = 20          # Mayor lookback para pivots S/R en H1
 SR_LEVELS    = 7           # Más niveles S/R para análisis swing
-SR_24H_CANDLES = 24        # 24 velas H1 = 24h (rango del día en indicators.py)
+SR_24H_CANDLES = 6         # 6 velas H4 = 24h (rango del día en indicators.py)
 
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
@@ -175,9 +175,9 @@ TELEGRAM_CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID', '')
 TELEGRAM_PREFIX    = "[GOLD swing]"   # etiqueta para distinguir este bot en el chat
 
 # ─── DATOS ─────────────────────────────────────────────────────────────────────
-CANDLES_PRIMARY  = 500    # 500 velas H1 ≈ 20 días de historia
-CANDLES_TREND    = 200    # 200 velas H4 ≈ 33 días
-CANDLES_HIGHER   = 365    # 365 velas D1 ≈ 1 año de contexto macro
+CANDLES_PRIMARY  = 500    # 500 velas H4 ≈ 4 meses de historia
+CANDLES_TREND    = 200    # 200 velas D1 ≈ 9 meses
+CANDLES_HIGHER   = 365    # 365 velas W1 ≈ 7 años de contexto macro
 
 # ─── BOT ───────────────────────────────────────────────────────────────────────
 LOOP_INTERVAL    = 60          # 1 minuto entre ciclos (más reactividad, mejor capturas de entrada)
@@ -193,7 +193,11 @@ ORDER_COMMENT_PREFIX = "XAU"                         # prefijo del comentario de
 BOT_LABEL            = "XAU/USD Swing Trading Bot"    # texto del banner de arranque
 # Contexto macro (el Oro SÍ lo usa; MACRO_TF_LABEL = etiqueta del TF superior en logs):
 USE_MACRO_CONTEXT    = True
-MACRO_TF_LABEL       = "D1"
+MACRO_TF_LABEL       = "W1"
+# Ajustes del backtest de 3 años (backtesting/engine_backtest.py, fuera de muestra):
+REQUIRE_MACRO_FOR_SELL = True   # ventas solo con W1 bajista: PF 1.69 → 1.78 (las ventas contra el macro perdían)
+USE_ML_FILTER          = True   # filtro predictivo models/xauusd_bot_H4_XAUUSD.joblib: ~79% acierto, PF 1.21
+                                # (sin filtro gana más: PF 1.78; ponlo en False si prefieres rentabilidad)
 # S/R parametrizado (reproduce exactamente el comportamiento previo del Oro):
 SR_CLUSTER_ATR_MULT  = 0.30   # tolerancia de agrupación = 0.30×ATR
 SR_TOLERANCE_FLOOR   = 0.5    # piso en $ (solo Oro) → max(atr*0.30, 0.5)

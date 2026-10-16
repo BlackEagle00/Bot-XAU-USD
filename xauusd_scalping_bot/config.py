@@ -30,10 +30,10 @@ SYMBOL       = "XAUUSD"      # Puede variar por broker: GOLD, XAUUSD, XAUUSDm.
 MAGIC_NUMBER = 20260621    # ID único — distinto a Oro swing (…618) y a los EUR/USD (…619/620)
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
-PRIMARY_TF   = mt5.TIMEFRAME_M5     # TF principal de análisis (M5)
-TREND_TF     = mt5.TIMEFRAME_M15    # TF de confirmación de tendencia (M15)
-HIGHER_TF    = mt5.TIMEFRAME_H1     # Contexto de tendencia mayor (H1) — sesgo top-down
-TF_LABELS    = "M5/M15/H1"         # Etiqueta legible para logs
+PRIMARY_TF   = mt5.TIMEFRAME_M15    # TF principal (M15). Backtest: M5 PF 0.97 (−76%), M15 PF 1.04
+TREND_TF     = mt5.TIMEFRAME_H1     # TF de confirmación de tendencia (H1)
+HIGHER_TF    = mt5.TIMEFRAME_H4     # Contexto de tendencia mayor (H4) — sesgo top-down
+TF_LABELS    = "M15/H1/H4"         # Etiqueta legible para logs
 
 # ─── PARÁMETROS DE INDICADORES ─────────────────────────────────────────────────
 EMA_FAST     = 9
@@ -51,10 +51,10 @@ MACD_SIGNAL  = 9
 ATR_PERIOD   = 14
 BB_PERIOD    = 20
 BB_STD       = 2.0
-VWAP_PERIOD  = 288         # 288 velas M5 = VWAP rodante de 24 horas
+VWAP_PERIOD  = 96          # 96 velas M15 = VWAP rodante de 24 horas
 SR_LOOKBACK  = 14          # Lookback más corto para pivots S/R locales en M5
 SR_LEVELS    = 5           # Menos niveles, más cercanos al precio (scalping)
-SR_24H_CANDLES = 288       # 288 velas M5 = 24h (rango del día en indicators.py)
+SR_24H_CANDLES = 96        # 96 velas M15 = 24h (rango del día en indicators.py)
 
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
@@ -173,9 +173,9 @@ TELEGRAM_CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID', '')
 TELEGRAM_PREFIX    = "[GOLD scalp]"   # etiqueta para distinguir este bot en el chat
 
 # ─── DATOS ─────────────────────────────────────────────────────────────────────
-CANDLES_PRIMARY  = 1500   # 1500 velas M5 ≈ 5.2 días (suficiente para EMA200 estable)
-CANDLES_TREND    = 500    # 500 velas M15 ≈ 5.2 días
-CANDLES_HIGHER   = 500    # 500 velas H1 ≈ 20 días de contexto
+CANDLES_PRIMARY  = 1500   # 1500 velas M15 ≈ 15 días (suficiente para EMA200 estable)
+CANDLES_TREND    = 500    # 500 velas H1 ≈ 20 días
+CANDLES_HIGHER   = 500    # 500 velas H4 ≈ 3 meses de contexto
 
 # ─── BOT ───────────────────────────────────────────────────────────────────────
 LOOP_INTERVAL    = 15           # 15s entre ciclos: reaccionar rápido dentro de la vela M5
@@ -191,7 +191,7 @@ ORDER_COMMENT_PREFIX = "XAU"                          # prefijo del comentario d
 BOT_LABEL            = "XAU/USD (Oro) Scalping Bot"   # texto del banner de arranque
 # Contexto macro (en scalp el Oro lo usa como sesgo H1, sin veto — REQUIRE_MACRO_ALIGNMENT=False arriba):
 USE_MACRO_CONTEXT    = True
-MACRO_TF_LABEL       = "H1"
+MACRO_TF_LABEL       = "H4"
 # S/R parametrizado (reproduce exactamente el comportamiento previo del Oro):
 SR_CLUSTER_ATR_MULT  = 0.30   # tolerancia de agrupación = 0.30×ATR
 SR_TOLERANCE_FLOOR   = 0.5    # piso en $ (solo Oro) → max(atr*0.30, 0.5)

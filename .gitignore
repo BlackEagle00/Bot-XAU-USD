@@ -45,3 +45,9 @@ htmlcov/
 *.temp
 
 *.claude
+# Backtesting (generado por backtesting/engine_backtest.py)
+backtesting/data/
+backtesting/reports/
+
+# Modelos del filtro predictivo (generados por engine_backtest.py --ml)
+models/

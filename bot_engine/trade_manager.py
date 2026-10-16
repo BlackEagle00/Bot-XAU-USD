@@ -60,7 +60,7 @@ def _min_stop_dist(symbol_info) -> float:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def open_trade(action: str, sl: float, tp: float, lot: float,
-               symbol_info, comment: str = "") -> Optional[int]:
+               symbol_info, comment: str = "", symbol: str = None) -> Optional[int]:
     """
     Envía una orden de mercado a MT5.
 
@@ -74,12 +74,14 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
         lot:        Tamaño del lote
         symbol_info: Objeto mt5.SymbolInfo del símbolo
         comment:    Etiqueta extra en el comentario de la orden
+        symbol:     Activo a operar (None → SYMBOL del config)
 
     Returns:
         Número de ticket (int) si la orden se ejecutó correctamente.
         None si falló.
     """
-    tick = get_tick()
+    symbol = symbol or SYMBOL
+    tick = get_tick(symbol)
     if tick is None:
         logger.error("No se pudo obtener tick para abrir trade.")
         return None
@@ -96,7 +98,7 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
 
     request = {
         "action":       mt5.TRADE_ACTION_DEAL,
-        "symbol":       SYMBOL,
+        "symbol":       symbol,
         "volume":       float(lot),
         "type":         order_type,
         "price":        round(exec_price, digits),
@@ -123,11 +125,11 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
 
     if result.retcode == mt5.TRADE_RETCODE_DONE:
         logger.info(
-            f"✅ {action} abierto | Ticket: #{result.order} | Lote: {lot} | "
+            f"✅ {action} {symbol} abierto | Ticket: #{result.order} | Lote: {lot} | "
             f"Entry: {exec_price:.{digits}f} | SL: {sl:.{digits}f} | TP: {tp:.{digits}f}"
         )
         notify(
-            f"🟢 {action} abierto #{result.order} {SYMBOL} | Lote {lot} | "
+            f"🟢 {action} abierto #{result.order} {symbol} | Lote {lot} | "
             f"Entry {exec_price:.{digits}f} | SL {sl:.{digits}f} | TP {tp:.{digits}f}"
         )
         return result.order
@@ -418,7 +420,8 @@ def update_trailing_stop(pos, atr: float, symbol_info) -> bool:
 # ANTI-DUPLICADO
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def is_too_close_to_existing(action: str, current_price: float, atr: float) -> bool:
+def is_too_close_to_existing(action: str, current_price: float, atr: float,
+                             symbol: str = None) -> bool:
     """
     Devuelve True si ya hay una posición abierta en la misma dirección
     a menos de ANTI_DUP_ATR_MULT × ATR del precio actual.
@@ -429,7 +432,7 @@ def is_too_close_to_existing(action: str, current_price: float, atr: float) -> b
     if not USE_ANTI_DUPLICATE:
         return False
 
-    positions    = get_open_positions()
+    positions    = get_open_positions(symbol)
     min_dist     = atr * ANTI_DUP_ATR_MULT
     target_type  = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
 

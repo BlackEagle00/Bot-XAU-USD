@@ -1,377 +1,275 @@
-# Bots de Trading MetaTrader 5 — Oro (XAU/USD) y EUR/USD
+# Bots de Trading MetaTrader 5 · Aurum
 
-Conjunto de **4 bots de trading automático** para MetaTrader 5 que comparten **un único
-motor** (`bot_engine/`) y se diferencian solo por su `config.py`. Cada uno está afinado para
-su instrumento y estilo. Combinan análisis técnico multitemporal, 35+ patrones de velas,
-gestión de riesgo dinámica y varios **filtros direccionales** (fuerza de tendencia, presión
-de order-flow, sesgo del dólar y un filtro de noticias de alto impacto).
+Bots de trading automático para **MetaTrader 5**. Nacieron para el oro (XAU/USD) y se extendieron a
+divisas, plata, acciones y ETF cripto. Comparten **un solo motor** (`bot_engine/`). Se suman un panel
+web local para operar con un clic y un backtester que reproduce el motor real sobre 3 años de histórico.
 
-> ⚠️ Solo Windows: la API de Python de MT5 necesita el **terminal MetaTrader 5 abierto y
-> con sesión iniciada** en la misma máquina.
+- **Cuatro bots automáticos** (oro y EUR/USD, cada uno en swing y scalping), cada uno con su `config.py`.
+- **Panel web Aurum.** Tarjetas por activo con dirección en tiempo real y apertura de órdenes demo con
+  un clic. Incluye noticias financieras, calendario económico y horarios de mercado en la hora del sistema.
+- **Perfiles independientes por clase de activo.** Divisas, metales y acciones, calibrados por separado
+  con walk-forward.
+- **Filtro predictivo.** Gradient boosting, validado fuera de muestra y activo solo donde logra ≥ 75 % de
+  acierto con ganancia.
+- **Riesgo que se adapta al capital.** Opera desde 100 USD con riesgo elevado acotado al 5 % y límite
+  diario por bot y por cuenta.
 
----
+> **Solo Windows y solo demo.** La API de Python de MT5 necesita el terminal abierto en la misma PC.
+> Los bots y el panel se niegan a operar una cuenta real salvo `ALLOW_LIVE_TRADING=1` en el `.env`.
 
-## Los 4 bots
+## Tecnología
 
-| Carpeta | Símbolo | Estilo | Temporalidades | Loop | Magic |
-|---|---|---|---|---|---|
-| `xauusd_bot/`          | GOLD (Oro) | **Swing**     | H1 / H4 / D1  | 60 s | 20260618 |
-| `xauusd_scalping_bot/` | GOLD (Oro) | **Scalping**  | M5 / M15 / H1 | 15 s | 20260621 |
-| `eurusd_bot/`          | EUR/USD    | **Swing**     | H1 / H4 / D1  | 60 s | 20260619 |
-| `eurusd_scalping_bot/` | EUR/USD    | **Scalping**  | M5 / M15 / H1 | 10 s | 20260620 |
-
-Cada carpeta de bot contiene solo su `config.py` (parámetros propios) y un `main.py` lanzador
-delgado; toda la lógica vive en `bot_engine/`. Cada bot tiene su `MAGIC_NUMBER` (para no
-mezclar trades) y su `.log`. **Pueden correr a la vez** en la misma cuenta sin pisarse: cada
-uno solo gestiona las posiciones que él mismo abrió (filtra por su Magic).
-
-> El motor es **compartido**: una mejora se hace **una sola vez** en `bot_engine/` y aplica a
-> los 4 bots. Las diferencias entre bots (temporalidades, contexto macro, escala de S/R,
-> umbrales…) se controlan por `config.py`, no duplicando código.
-
-### 📖 Guías detalladas por instrumento
-
-Para el detalle de cada bot (cómo se ejecuta, archivos, proceso ciclo por ciclo, filtros,
-riesgo y tabla de valores afinados de **swing** y **scalping**):
-
-| Guía | Cubre |
+| Pieza | Versión / detalle |
 |---|---|
-| [**GUIA_GOLD.md**](docs/GUIA_GOLD.md) | Oro (XAU/USD): `xauusd_bot/` swing + `xauusd_scalping_bot/` scalp |
-| [**GUIA_EURUSD.md**](docs/GUIA_EURUSD.md) | EUR/USD: `eurusd_bot/` swing + `eurusd_scalping_bot/` scalp |
+| Python | 3.9+ (probado con 3.13) |
+| MetaTrader5 (paquete) | ≥ 5.0.37, con el terminal MT5 abierto |
+| pandas / numpy | Indicadores y backtest |
+| scikit-learn | ≥ 1.5, solo para el filtro predictivo (import diferido) |
+| python-dotenv | Credenciales desde `.env` |
+| Panel | Librería estándar (`http.server`), HTML/CSS/JS propios, sin frameworks |
 
-Este README es el panorama general; las guías entran en el detalle de cada instrumento.
+## Arquitectura
 
----
+```mermaid
+flowchart LR
+    B[4 bots automáticos] --> E[bot_engine/]
+    P[Panel web: server.py + 6 workers] --> E
+    T[Backtest y calibración] --> E
+    E <--> MT5[(MetaTrader 5 · demo)]
+```
 
-## Requisitos
+El detalle está en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), y el porqué de cada decisión en
+[docs/adr/](docs/adr/).
 
-| Requisito | Mínimo |
-|---|---|
-| Windows | 10 / 11 |
-| Python | 3.9+ |
-| MetaTrader 5 (terminal) | Cualquier broker con XAUUSD y EURUSD |
-| Internet | Recomendado (filtro de noticias y notificaciones Telegram) |
+## Empezar
 
----
+1. **Instala** las dependencias (son las mismas para todo el repo):
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. **Credenciales.** Copia la plantilla: `cp .env.example .env`. El `.env` está en `.gitignore`.
+   ```env
+   MT5_LOGIN=0            # 0 = usa la cuenta ya abierta en el terminal MT5
+   MT5_PASSWORD=
+   MT5_SERVER=
+   TELEGRAM_BOT_TOKEN=    # opcional
+   TELEGRAM_CHAT_ID=      # opcional
+   ```
+3. **Abre MetaTrader 5** con una cuenta **demo** y activa **Algo Trading**.
+4. **Lanza** lo que necesites:
+   ```bash
+   python run.py                  # menú interactivo
+   python run.py oro              # oro swing H4/D1/W1   (también: oro_scalping | eurusd | eurusd_scalping)
+   python run.py dashboard        # panel web → http://127.0.0.1:8765
+   ```
+   Se detiene con **Ctrl+C**. Las posiciones abiertas quedan en MT5. Cualquier cambio de config
+   necesita reiniciar el proceso.
 
-## Instalación
+> **Histórico M5.** Para hacer backtest en M5 con 3 años, en MT5 ve a *Herramientas → Opciones →
+> Gráficos → Máx. barras en el gráfico* y pon **Ilimitado**. Reinicia el terminal. Sin ese ajuste,
+> M5 solo trae unos 17 meses.
+
+## Estructura
+
+```
+Bot-XAU-USD/
+├── run.py                 lanzador (bots y panel)
+├── bot_engine/            EL MOTOR COMPARTIDO: señales, riesgo, órdenes, filtro predictivo
+├── xauusd_bot/            config.py + main.py  · oro swing        (magic 20260618)
+├── xauusd_scalping_bot/   config.py + main.py  · oro scalping     (magic 20260621)
+├── eurusd_bot/            config.py + main.py  · EUR/USD swing    (magic 20260619)
+├── eurusd_scalping_bot/   config.py + main.py  · EUR/USD scalping (magic 20260620)
+├── dashboard/             panel: server.py, worker.py, static/index.html
+│   └── profiles/          _base.py + 6 perfiles <clase>_<modo>/config.py (magic 20260630)
+├── backtesting/           engine_backtest.py, calibrate.py, README.md
+├── models/                modelos .joblib + manifest.json (generados, fuera de git)
+├── tests/                 test_engine.py
+└── docs/                  ARCHITECTURE, PRD, DESIGN_SYSTEM, adr/, guías por instrumento
+```
+
+## Funcionalidades clave
+
+### Los 4 bots
+
+| Carpeta | Símbolo | Estilo | Temporalidades | Loop |
+|---|---|---|---|---|
+| `xauusd_bot/` | XAUUSD | Swing | H4 / D1 / W1 | 60 s |
+| `xauusd_scalping_bot/` | XAUUSD | Scalping | M15 / H1 / H4 | 15 s |
+| `eurusd_bot/` | EURUSD | Swing | H1 / H4 / D1 | 60 s |
+| `eurusd_scalping_bot/` | EURUSD | Scalping | M5 / M15 / H1 | 10 s |
+
+Cada bot solo gestiona sus propias posiciones (filtra por su número mágico), así que pueden correr a la
+vez en la misma cuenta. El nombre del oro cambia según el broker (`XAUUSD`, `GOLD`, `XAUUSDm`); se
+ajusta en `SYMBOL`. Las guías detalladas están en [docs/GUIA_GOLD.md](docs/GUIA_GOLD.md) y
+[docs/GUIA_EURUSD.md](docs/GUIA_EURUSD.md).
+
+### Panel web (Aurum)
+
+- **Inicio.** Reloj en la hora del sistema, balance y nivel de la cuenta, y las sesiones de Sídney,
+  Tokio, Londres, Nueva York, Wall Street y metales, con barra de 24 h y "abre / cierra en…".
+  Debajo, los próximos eventos de alto impacto.
+- **Mercados.** Pestañas Divisas · Metales · Acciones · Cripto (ETF) y modos Swing / Scalping. Cada
+  tarjeta muestra el precio, el score, RSI, ADX, la probabilidad del modelo y el lote con su riesgo.
+  El botón **destella** fuerte con una señal completa y suave cuando solo hay sesgo. Al confirmar,
+  responde: *"Se ha realizado la apertura de una operación BUY/SELL…"*.
+- **Noticias.** Titulares de Google Noticias, CNBC e Investing.com, más el calendario económico de
+  ForexFactory, todo en hora local.
+- **Contenido de ayuda.** Acerca del bot, Velas japonesas, Conceptos clave y Soporte (errores comunes).
+- **Aviso de calidad.** Un perfil sin ventaja fuera de muestra muestra **"Sin ventaja probada"**.
+
+### Comportamiento según el capital
+
+| Nivel | Capital | Operaciones abiertas | Corte diario |
+|---|---|---|---|
+| Micro | < 500 USD | 1 | 5 % |
+| Pequeño | 500 – 2 000 USD | 2 | 7 % |
+| Estándar | ≥ 2 000 USD | `MAX_OPEN_TRADES` | `MAX_DAILY_LOSS_PCT` |
+
+- **Riesgo normal.** Es el 1 % por operación.
+- **Riesgo elevado.** Si el lote mínimo arriesga más del 1 % pero ≤ 5 % (`MAX_RISK_MIN_LOT`), se opera
+  y se avisa "riesgo elevado", junto con el capital necesario para volver al 1 %.
+- **Sin operar.** Por encima del 5 % el activo no se opera.
+- **Límite de cuenta.** Hay además un corte del 10 % diario para toda la cuenta, sumando bots y panel
+  (`ACCOUNT_MAX_DAILY_LOSS_PCT`).
+- **Spread.** Una operación se descarta si el spread supera el 25 % de su stop.
+
+### Backtest, calibración y filtro predictivo
 
 ```bash
-pip install -r requirements.txt   # las mismas dependencias para los 4 bots
+python backtesting/engine_backtest.py xauusd_bot H4 --ml                       # un bot
+python backtesting/engine_backtest.py metals_swing H4 --symbol XAGUSD --ml     # un perfil del panel
+python backtesting/engine_backtest.py forex_swing H1 --symbol EURUSD --set MIN_SIGNAL_SCORE=0.01 --signals-only
+python backtesting/calibrate.py forex_swing --write                            # calibra la clase
 ```
 
-### Credenciales (archivo `.env`)
+- **Backtest.** Reproduce el motor real vela a vela con 3 balances (100 / 1 000 / 10 000 USD) y Monte
+  Carlo. Con `--ml` entrena el filtro predictivo con walk-forward y purga; el modelo solo se guarda si,
+  **fuera de muestra**, logra ≥ 75 % de acierto con PF > 1.
+- **Calibración.** `calibrate.py` elige por clase el umbral, el SL/TP, la regla de ventas y la
+  temporalidad, y solo escribe en el config si mejora fuera de muestra.
+- **Más detalle** en [backtesting/README.md](backtesting/README.md).
 
-Las credenciales **no van en `config.py`**: se leen de un archivo `.env` en la raíz del
-proyecto (vía `python-dotenv`). Copia la plantilla y rellénala (`.env` está en `.gitignore`):
+## Flujo de trabajo
+
+- **El motor se cambia una sola vez,** en `bot_engine/`, y aplica a los bots, al panel y al backtest.
+- **Lo que debe ser distinto por bot** se resuelve con una clave de config (leída con `getattr` y
+  valor por defecto), nunca copiando código.
+- **Después de cambiar el motor o un config**, se vuelve a correr el backtest. El hash cambia, así que
+  se recalculan las señales y se reentrenan los modelos.
+
+## Estándares de código
+
+- **Imports.** Entre módulos del motor son relativos (`from .signals import …`); la configuración se
+  lee con `from config import …`.
+- **Horas de MT5.** Son del **servidor**: se usa `data_handler.server_now()`, nunca `datetime.now()`.
+- **Comentarios.** Solo explican el porqué. Los atajos con límite conocido se marcan con
+  `shortcut: <límite>, <cuándo mejorarlo>`.
+- **Seguridad.** Se siguen las reglas de [SECURITY.md](SECURITY.md) y de [AGENTS.md](AGENTS.md).
+
+## Pruebas
 
 ```bash
-cp .env.example .env
+python tests/test_engine.py                      # asserts simples, sin pytest ni terminal MT5
+python -m py_compile bot_engine/*.py */config.py dashboard/*.py backtesting/*.py
 ```
 
-Contenido de `.env`:
+Cubren:
+- **Riesgo:** tamaño de lote, riesgo elevado, límite diario de bot y de cuenta, regla del spread.
+- **Gestión de posiciones:** el trailing nunca se ajusta en pérdida.
+- **Modelos y validación:** el manifiesto rechaza un modelo alterado; el walk-forward no mira el futuro.
+- **Calibración:** aplicar el umbral después equivale a correr el motor con ese umbral.
+- **Panel:** el parser de noticias es seguro y se validan las órdenes.
 
-```env
-MT5_LOGIN=0            # 0 = usa la cuenta ya abierta en el terminal MT5
-MT5_PASSWORD=
-MT5_SERVER=
+## Contribuir
 
-# Notificaciones Telegram (opcional; déjalo vacío para desactivarlas)
-TELEGRAM_BOT_TOKEN=    # te lo da @BotFather al crear el bot
-TELEGRAM_CHAT_ID=      # tu id numérico (háblale a @userinfobot)
-```
+- **Lee primero** [AGENTS.md](AGENTS.md) (también vale para personas) y
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Decisiones grandes:** cada una lleva su ADR en `docs/adr/`, con número correlativo.
+- **Antes de entregar:** los tests en verde, `py_compile` limpio, y el resultado probado en la demo.
 
-Si dejas `MT5_LOGIN=0`, el bot usa la cuenta que ya tengas con sesión iniciada en MT5
-(lo más cómodo). Cuenta de referencia actual: **demo de XM** (`XMGlobal-MT5`), oro como
-`SYMBOL="GOLD"`.
+## Referencia del motor
 
----
+### Ciclo
 
-## Ejecución
+1. **Conexión.** Verifica MT5 y que la cuenta sea demo.
+2. **Datos.** Descarga las velas de 3 temporalidades sin la vela en formación. También calcula el
+   order-flow y el sesgo del dólar.
+3. **Indicadores y patrones.** EMA 9/21/50/200, RSI, MACD, ATR, ADX, Bollinger, VWAP y S/R, más
+   44 patrones de velas (su aporte se limita a ±4).
+4. **Señal.** Suma ponderada → score (rango ≈ ±12). Si supera `MIN_SIGNAL_SCORE` es BUY/SELL; si no,
+   HOLD.
+5. **Filtro predictivo** (si hay modelo): veta la señal si la probabilidad queda bajo τ.
+6. **Riesgo.** Nivel de capital, límites diarios, lote dinámico, SL y TP.
+7. **Gestión.** En cada ciclo aplica break-even BE+ y trailing progresivo a las posiciones abiertas.
 
-```bash
-python run.py                 # menú interactivo para elegir bot
-python run.py oro             # lanza uno directo: oro | oro_scalping | eurusd | eurusd_scalping
-# — o desde la carpeta del bot —
-cd xauusd_bot && python main.py
-```
-
-Para detener: **Ctrl+C** — termina el ciclo en curso y se desconecta limpio. Las
-posiciones abiertas **se mantienen** en MT5 (no se cierran al apagar el bot).
-
-> 🔁 **Los cambios necesitan reinicio.** Un bot en marcha tiene el código/config viejos en
-> memoria: editar `config.py` no hace nada hasta que haces Ctrl+C y lo vuelves a lanzar.
-
----
-
-## Cómo funciona — ciclo por ciclo
-
-Cada `LOOP_INTERVAL` segundos el bot ejecuta esta tubería:
-
-1. **Conexión** — verifica/reconecta el terminal MT5 y valida el símbolo.
-2. **Datos** — descarga OHLCV de las 3 temporalidades (primaria, tendencia, superior) y
-   descarta la vela en formación. Además calcula los factores extra: **order-flow** (ticks
-   recientes) y **sesgo del dólar (DXY)**.
-3. **Indicadores** — EMA(9/21/50/200), SMA(20/50), RSI, MACD, ATR, **ADX**, Bandas de
-   Bollinger, VWAP y soportes/resistencias.
-4. **Patrones** — 35+ patrones de velas japonesas (Doji, Hammer, Engulfing, Morning Star…).
-5. **Señal** — suma ponderada de todo → score (rango ≈ ±12). Si supera `MIN_SIGNAL_SCORE`
-   es BUY/SELL; si no, HOLD. Luego varios **filtros** pueden degradar a HOLD (ver abajo).
-6. **Riesgo** — valida pérdida diaria, máx. trades simultáneos y margen libre; calcula lote,
-   SL y TP.
-7. **Gestión** — en **cada** ciclo, sobre las posiciones abiertas del bot: break-even (BE+)
-   y trailing stop progresivo. Después intenta abrir un trade nuevo si hay señal válida.
-
----
-
-## Sistema de scoring
-
-El score combina cada componente con su peso (`SCORE_WEIGHTS` en `config.py`). Pesos del
-**oro swing** como referencia (varían por bot):
+### Pesos del score (oro swing como referencia)
 
 | Componente | Peso | Qué mide |
 |---|---|---|
-| EMAs (posición + cruces) | 1.3 | Dirección y momentum |
-| RSI | 1.0 | Sobrecompra/sobreventa y timing |
+| EMAs | 1.3 | Dirección y momentum |
+| RSI | 1.0 | Sobrecompra / sobreventa |
 | MACD | 1.1 | Cruce de momentum |
-| Patrones de velas | 0.8 | Reversión/continuación |
-| Bollinger Bands | 0.7 | Rango y squeeze |
-| Soporte/Resistencia | 0.9 | Niveles clave |
-| VWAP | 0.1 | Precio justo intradía |
-| Volumen (de velas) | 0.4 | Confirmación del movimiento |
-| Confirmación TF tendencia | 1.0 | EMA del H4/M15 |
-| **Macro** (solo oro) | 0.8 / 0.5 | Sesgo del D1 (swing) / H1 (scalp) |
-| **🟢 Order-flow** (nuevo) | 0.5–0.8 | Presión compra/venta por ticks |
-| **🌐 Inter-mercado DXY** (nuevo) | 0.3–0.8 | Sesgo del dólar (inverso) |
+| Patrones de velas | 0.8 | Reversión / continuación |
+| Bollinger | 0.7 | Rango y compresión |
+| Soporte / Resistencia | 0.9 | Niveles clave |
+| VWAP / Volumen | 0.1 / 0.4 | Precio justo y confirmación |
+| TF de tendencia | 1.0 | EMAs de la temporalidad superior |
+| Macro | 0.8 / 0.5 | Tendencia de la TF mayor |
+| Order-flow | 0.5–0.8 | Presión compra / venta por ticks |
+| Índice dólar (DXY) | 0.3–0.8 | Sesgo del dólar, inverso |
 
-`score ≥ +MIN_SIGNAL_SCORE` → **BUY** · `score ≤ −MIN_SIGNAL_SCORE` → **SELL** · resto → **HOLD**.
+### Filtros que bloquean entradas
 
----
-
-## Filtros que bloquean entradas (gates)
-
-Una señal BUY/SELL se convierte en HOLD si choca con alguno de estos filtros. Solo frenan
-**aperturas nuevas**; nunca cierran una posición abierta.
+Solo frenan **aperturas nuevas**; nunca cierran una posición abierta.
 
 | Filtro | Flag | Qué hace |
 |---|---|---|
-| **Alineación de tendencia** | `REQUIRE_TREND_ALIGNMENT` | Solo opera a favor de la tendencia de la TF primaria (no contra-tendencia). |
-| **Anti-agotamiento RSI** | (siempre activo) | No vende con RSI ≤ `RSI_NO_SELL_BELOW` ni compra con RSI ≥ `RSI_NO_BUY_ABOVE` (no "vender el suelo / comprar el techo"). |
-| **ADX (fuerza de tendencia)** | `USE_ADX_FILTER` | Si ADX < `ADX_MIN_TREND` el mercado está lateral (chop) → no abre. |
-| **Macro (solo oro)** | `REQUIRE_MACRO_ALIGNMENT` | Oro swing: veta operar contra un D1 en tendencia fuerte. Oro scalp: solo sesgo, sin veto. |
-| **Noticias de alto impacto** | `USE_NEWS_FILTER` | No abre en la ventana ± minutos alrededor de NFP/CPI/FOMC/BCE, etc. |
+| Alineación de tendencia | `REQUIRE_TREND_ALIGNMENT` | Solo opera a favor de la tendencia de la TF primaria. |
+| Anti-agotamiento RSI | `RSI_NO_SELL_BELOW` / `RSI_NO_BUY_ABOVE` | No vende en el suelo ni compra en el techo. |
+| ADX | `USE_ADX_FILTER` | No opera con mercado lateral (ADX < `ADX_MIN_TREND`). |
+| Macro | `REQUIRE_MACRO_ALIGNMENT` / `REQUIRE_MACRO_FOR_SELL` | Veta operar contra la TF mayor; la segunda veta solo las ventas. |
+| Noticias | `USE_NEWS_FILTER` | No opera ± minutos alrededor de eventos de alto impacto. |
+| Filtro predictivo | `USE_ML_FILTER` | No opera si P(TP antes que SL) < τ. |
 
----
-
-## Gestión de riesgo y protección de ganancia
-
-| Mecanismo | Flag | Comportamiento |
-|---|---|---|
-| **Break-even "BE+"** | `USE_BREAKEVEN` | Cuando el precio recorre `BE_TRIGGER_PCT` del camino al TP, mueve el SL a `entrada ∓ (spread + BE_PLUS_POINTS)` → sale en positivo, no exactamente en cero. |
-| **Trailing + lock progresivo** | `USE_TRAILING_STOP` / `USE_PROGRESSIVE_TRAIL` | Cada ciclo toma el SL **más protector** entre el trailing ATR clásico y el *lock progresivo*: a medida que el trade gana, asegura una fracción creciente del profit (de `TRAIL_LOCK_PCT_MIN` a `TRAIL_LOCK_PCT_MAX` ≈ 1:1). Un retroceso sale en ganancia, no en pérdida. |
-| **Anti-duplicado** | `USE_ANTI_DUPLICATE` | No apila trades en la misma dirección a menos de `ANTI_DUP_ATR_MULT × ATR` de uno existente. |
-| **Lote dinámico** | — | Se recalcula en cada trade según el balance y la distancia del SL (`RISK_PER_TRADE`). |
-| **Límite de pérdida diaria** | — | Detiene nuevas operaciones si la pérdida del día ≥ `MAX_DAILY_LOSS_PCT`. |
-| **Margen mínimo** | — | No opera si el margen libre cae por debajo del umbral de seguridad. |
-
-> El riesgo *correlacionado* total ≈ `MAX_OPEN_TRADES × RISK_PER_TRADE`, porque con
-> `REQUIRE_TREND_ALIGNMENT` todas las posiciones van en la misma dirección. El oro swing,
-> con 5 trades × 1%, está en ~5%.
-
----
-
-## Factores direccionales extra (nuevos)
-
-Cuatro factores que ayudan a decidir si el precio sube o baja. Todos van detrás de un
-interruptor y **degradan con elegancia**: si fallan, el bot sigue operando sin ellos.
-
-### 🟢 Order-flow (presión compra/venta) — `USE_ORDERFLOW`
-Aproxima el "volumen de compra vs venta" con los ticks recientes (en CFDs **no hay volumen
-real**): `delta = (compras − ventas)/(compras + ventas) ∈ [−1, 1]`. Suma como *nudge* al
-score. Ventana: `ORDERFLOW_LOOKBACK_SECS` (300 s swing / 120 s scalp).
-
-### 🌐 Inter-mercado: índice dólar (DXY) — `USE_INTERMARKET`
-El oro y el EUR/USD son **inversos al dólar**: si el DXY baja, hay viento de cola alcista.
-El bot mide la tendencia del DXY y sesga el score (`INTERMARKET_INVERSE=True`).
-> ⚠️ **Símbolo del índice dólar.** En la cuenta XM de referencia es `USDX-SEP26` (contrato de
-> **futuros trimestral**, "US Dollar Index"), ya configurado en `INTERMARKET_SYMBOL` de los 4 bots.
-> Al vencer (~2026-09-11) hay que cambiar el sufijo al siguiente contrato (p. ej. `USDX-DEC26`).
-> Si el símbolo no existe en tu broker, el factor **se desactiva solo** (sin error).
-
-### ⚡ ADX (fuerza de tendencia) — `USE_ADX_FILTER`
-Mide si la tendencia tiene fuerza (no su dirección). Si ADX < `ADX_MIN_TREND` el mercado
-está lateral y los cruces son ruido → no abre. Es el filtro más barato y efectivo contra
-el "chop".
-
-### 📰 Filtro de noticias — `USE_NEWS_FILTER`
-Usa el calendario económico semanal de **ForexFactory** (JSON gratuito) y bloquea abrir
-trades en la ventana `±NEWS_BLACKOUT_*_MIN` alrededor de eventos de alto impacto de las
-divisas en `NEWS_CURRENCIES`. Módulo: `news_filter.py`.
-> Si no hay internet, por defecto **NO bloquea** (`NEWS_FAIL_OPEN=True`) para no congelar el
-> bot. Pon `False` si prefieres no operar a ciegas cuando el calendario no carga.
-
----
-
-## Notificaciones por Telegram (opcional) — `USE_TELEGRAM`
-
-Te avisa al **celular** de la actividad del bot sin tener que mirar la consola ni
-conectarte por escritorio remoto. Módulo: `telegram_notifier.py` (solo stdlib, igual que
-el filtro de noticias: envía en un hilo aparte para no frenar el loop y **degrada con
-elegancia** si Telegram falla).
-
-Avisa cuando el bot:
-- 🟢 **arranca** / 🔴 **se detiene** (con símbolo, temporalidades y balance),
-- 🟢 **abre** una operación (ticket, lote, entry, SL, TP),
-- ✅/🔴 **cierra** una operación por SL/TP o manual, con el **P&L realizado**,
-- ⚠️/✅ **pierde / recupera** la conexión con MT5 (avisa una sola vez, sin spam).
-
-Cada bot manda un **prefijo** para distinguirlo en el mismo chat: `[GOLD swing]`,
-`[GOLD scalp]`, `[EURUSD swing]`, `[EURUSD scalp]`.
-
-**Configuración (una sola vez, sirve para los 4 bots):**
-1. En Telegram habla con **@BotFather** → `/newbot` → copia el **token**.
-2. Habla con **@userinfobot** → copia tu **chat_id** (número).
-3. Escríbele "hola" a **tu** bot (si no, Telegram no le deja enviarte mensajes).
-4. Pon ambos valores en el `.env` (`TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`).
-5. Reinicia los bots.
-
-> Si dejas el token o el chat_id vacíos, las notificaciones **se desactivan solas** (sin
-> error). Para apagarlas a propósito, pon `USE_TELEGRAM = False`. No añade dependencias
-> nuevas (usa `urllib` de la stdlib). La detección de cierres compara los tickets abiertos
-> entre ciclos: un trade que abre y cierra dentro del mismo ciclo puede no notificar el
-> cierre (el de apertura siempre sale).
-
----
-
-## Interruptores (on/off) — resumen
-
-Todos en `config.py` de cada bot. Valor por defecto entre paréntesis:
+### Interruptores
 
 | Flag | Por defecto | Efecto |
 |---|---|---|
-| `USE_BREAKEVEN` | `True` | Activa el break-even "BE+". |
-| `USE_TRAILING_STOP` | `True` | Activa el trailing stop. |
-| `USE_PROGRESSIVE_TRAIL` | `True` | El trailing asegura fracción creciente del profit (≈1:1). |
-| `USE_ANTI_DUPLICATE` | `True` | Exige separación mínima entre entradas de la misma dirección. |
-| `USE_ADX_FILTER` | `True` | Bloquea entradas en mercado lateral (ADX bajo). |
-| `USE_ORDERFLOW` | `True` | Suma la presión compra/venta por ticks al score. |
-| `USE_INTERMARKET` | `True` | Suma el sesgo del dólar (DXY) al score. |
-| `USE_NEWS_FILTER` | `True` | Bloquea operar alrededor de noticias de alto impacto. |
-| `USE_TELEGRAM` | `True` | Envía notificaciones al celular (se desactiva sola sin token/chat_id). |
-| `REQUIRE_TREND_ALIGNMENT` | `True` | Solo opera a favor de la tendencia. |
-| `REQUIRE_MACRO_ALIGNMENT` | `True` oro swing / `False` oro scalp | Veta operar contra la tendencia macro (solo oro). |
-| `INTERMARKET_INVERSE` | `True` | El activo se mueve inverso al dólar (oro/EUR). |
-| `NEWS_FAIL_OPEN` | `True` | Si el calendario no carga, permite operar (no congela el bot). |
+| `USE_BREAKEVEN` / `USE_TRAILING_STOP` / `USE_PROGRESSIVE_TRAIL` | `True` | BE+, trailing y lock progresivo. |
+| `USE_ANTI_DUPLICATE` | `True` | Separación mínima entre entradas en la misma dirección. |
+| `USE_ADX_FILTER` / `USE_ORDERFLOW` / `USE_INTERMARKET` | `True` | Factores direccionales. |
+| `USE_NEWS_FILTER` / `NEWS_FAIL_OPEN` | `True` / `True` | Filtro de noticias; si no carga el calendario, permite operar. |
+| `USE_TELEGRAM` | `True` | Avisos al celular; se desactiva solo si faltan las claves. |
+| `USE_ML_FILTER` | según config | Filtro predictivo (necesita un modelo registrado). |
+| `MAX_RISK_MIN_LOT` | `0.05` | Riesgo máximo que se acepta con el lote mínimo. |
+| `ACCOUNT_MAX_DAILY_LOSS_PCT` | `0.10` | Corte diario de toda la cuenta. |
 
----
-
-## Afinado por bot (valores actuales)
-
-Mantén estos valores **intencionalmente distintos** por instrumento/estilo:
+### Afinado por bot (valores actuales)
 
 | Parámetro | Oro swing | Oro scalp | EUR swing | EUR scalp |
 |---|---|---|---|---|
 | `MIN_SIGNAL_SCORE` | 5.0 | 5.5 | 5.0 | 4.5 |
 | `SL_ATR_MULT` / `TP_ATR_MULT` | 2.0 / 4.5 | 1.5 / 3.0 | 1.2 / 2.7 | 1.0 / 1.5 |
 | `MIN_RR` | 2.0 | 1.8 | 2.0 | 1.2 |
-| `RISK_PER_TRADE` / `MAX_OPEN_TRADES` | 1% / 5 | 1% / 3 | 1% / 3 | 1% / 3 |
-| `BE_TRIGGER_PCT` | 0.40 | 0.55 | 0.50 | 0.55 |
-| `TRAILING_ATR_MULT` | 2.5 | 1.0 | 1.5 | 0.5 |
-| Lock progresivo START / MIN→MAX / FULL | 1.5 / .35→.90 / 4.0 | 1.0 / .40→.90 / 2.7 | 0.9 / .35→.90 / 2.4 | 0.5 / .40→.90 / 1.3 |
-| `ADX_MIN_TREND` | 20 | 18 | 20 | 18 |
-| Order-flow ventana / peso | 300 s / 0.5 | 120 s / 0.8 | 300 s / 0.5 | 120 s / 0.8 |
-| DXY TF / peso | H4 / 0.8 | H1 / 0.4 | H4 / 0.8 | H1 / 0.3 |
-| Noticias ±min / divisas | 30 / USD | 15 / USD | 30 / USD,EUR | 15 / USD,EUR |
-| `RSI_NO_SELL_BELOW` / `RSI_NO_BUY_ABOVE` | 32 / 68 | 30 / 70 | 32 / 68 | 30 / 70 |
-| `MAX_SPREAD_POINTS` | 80 | 70 | 50 | 18 |
-| Filtro macro | D1 (veto) | H1 (sesgo) | — | — |
+| `RISK_PER_TRADE` / `MAX_OPEN_TRADES` | 1 % / 5 | 1 % / 3 | 1 % / 3 | 1 % / 3 |
+| `MAX_DAILY_LOSS_PCT` | 10 % | 10 % | 5 % | 5 % |
+| Filtro predictivo / ventas solo con macro bajista | sí / sí | no / no | no / no | no / no |
 
----
+`config.py` siempre manda: esta tabla es una foto y puede quedar desactualizada.
 
-## Qué verás en consola
+### Telegram (opcional)
 
-```
-📊 BUY  | Score:  +6.10 | EMA:+2.10 RSI:+0.63 MACD:+0.81 BB:+0.40 Pat:+0.80 S/R:+0.45
-        Macro:+1.20 OF:+0.40 IM:+1.20 | ADX:31 | Tendencia: up | D1: up | ATR: 8.42
-🎯 Señal BUY | Score: +6.10 | Lote: 0.20 | Entry: 2045.23 | SL: 2028.39 | TP: 2083.13
-✅ BUY abierto | Ticket: #38291042 | ...
-☑  BE+ BUY #38291042 | SL: 2028.39 → 2045.48 (recorrido ...)
-↑  Trailing BUY #38291042 | SL 2045.48 → 2058.10 | lock progresivo asegura 62% del profit
-📰 Trade SELL bloqueado por noticia de alto impacto: USD High: Core CPI @ 12:30 UTC
-── STATUS 14:40:00 ── Ciclo #20 | Trades sesión: 2 | P&L hoy: +34.50 USD | ...
-```
+Avisa cuando un bot arranca o se detiene, cuando abre o cierra una operación (con su P&L) y cuando se
+pierde o recupera la conexión con MT5. Se configura una vez: crea un bot con @BotFather, consigue tu
+id con @userinfobot, escríbele "hola" a tu bot y pon `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` en el
+`.env`. Si faltan esas claves, se desactiva solo.
 
-> Nota cosmética: la consola de Windows (cp1252) puede mostrar `UnicodeEncodeError` por los
-> emojis. El archivo `.log` es UTF-8 y queda perfecto. No afecta al funcionamiento.
+## Licencia
 
-> 📖 **¿Empezando?** Cada instrumento tiene su guía detallada (cómo leer el log, los filtros,
-> el riesgo y los valores afinados de sus variantes swing y scalping):
-> [**Guía del ORO**](docs/GUIA_GOLD.md) · [**Guía del EUR/USD**](docs/GUIA_EURUSD.md).
-
----
-
-## Estructura del proyecto
-
-```
-Bot-XAU-USD/
-├── run.py              → Lanzador común de los 4 bots
-├── requirements.txt    → Dependencias del proyecto
-├── .env.example        → Plantilla de credenciales (copiar a .env)
-├── README.md           → Este panorama general
-├── CLAUDE.md           → Guía para agentes/IA que trabajen el repo
-├── bot_engine/         → ⚙️ EL MOTOR COMPARTIDO (toda la lógica; ver detalle abajo)
-├── xauusd_bot/         → config.py + main.py (Oro swing)
-├── xauusd_scalping_bot/→ config.py + main.py (Oro scalping)
-├── eurusd_bot/         → config.py + main.py (EUR/USD swing)
-├── eurusd_scalping_bot/→ config.py + main.py (EUR/USD scalping)
-├── docs/               → Guías por instrumento, brokers, migración (+ historico/)
-└── backtesting/        → Toolkit de backtesting independiente (no usado por los bots)
-```
-
-Cada carpeta de bot tiene solo **dos** archivos:
-
-```
-<bot>/
-├── config.py   → TODOS los parámetros de ese bot (valores propios)
-└── main.py     → Lanzador delgado: pone su config.py en sys.path y llama a bot_engine.core.run()
-```
-
-## El motor compartido (`bot_engine/`)
-
-```
-bot_engine/
-├── core.py           → Loop principal y orquestación (run(), _run_cycle(), _try_open_trade())
-├── connection.py     → Conexión / reconexión a MT5
-├── data_handler.py   → OHLCV, cuenta, order-flow (ticks) y sesgo DXY
-├── indicators.py     → EMA, SMA, RSI, MACD, ATR, ADX, BB, VWAP, S/R (parametrizado por config)
-├── patterns.py       → 35+ patrones de velas
-├── signals.py        → Motor de scoring + filtros (gates); macro gated por USE_MACRO_CONTEXT
-├── risk_manager.py   → Lote, SL/TP, pérdida diaria, margen
-├── trade_manager.py  → Abrir/cerrar, break-even, trailing progresivo, anti-dup
-├── news_filter.py    → Calendario económico (blackout de noticias)
-├── telegram_notifier.py → Notificaciones a Telegram (opcional)
-└── logger_config.py  → Logs a consola y a archivo .log
-```
-
-Los módulos del motor se importan entre sí con imports relativos (`from .signals import …`) y
-leen los parámetros con `from config import …`, que resuelve al `config.py` del bot que lo
-lanzó (su carpeta va primero en `sys.path`). Como cada bot corre en su **propio proceso**, no
-se mezclan configs. `run.py` (raíz) es el lanzador común de los 4 bots.
-
----
-
-## Compatibilidad con brokers
-
-El bot detecta automáticamente el modo de ejecución (`FOK`/`IOC`/`RETURN`), la distancia
-mínima de SL/TP (`trade_stops_level`) y el paso/mín/máx de lote. Probado contra ICMarkets,
-Pepperstone, XM y FP Markets. El nombre del oro varía por broker (`XAUUSD`, `GOLD`,
-`XAUUSDm`): ajústalo en `SYMBOL` dentro de `config.py`.
-
----
+TBD: el repositorio todavía no declara licencia.
 
 ## Advertencia de riesgo
 
-> **El trading automatizado conlleva riesgo de pérdida de capital.** Este bot es una
-> herramienta de ayuda, no una garantía de beneficios. Pruébalo siempre en **cuenta demo**
-> antes de usar fondos reales. Nunca arriesgues dinero que no puedas permitirte perder.
-> El rendimiento pasado no garantiza resultados futuros.
+> El trading automatizado y con apalancamiento conlleva **alto riesgo de pérdida**. Con riesgo
+> elevado de 5 % por operación, 10 pérdidas seguidas equivalen a cerca de −40 % de la cuenta. Los
+> resultados del backtest no garantizan resultados futuros. Úsalo en **cuenta demo**.

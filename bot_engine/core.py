@@ -47,8 +47,9 @@ from .signals import generate_signal
 from .news_filter import in_news_blackout
 from .risk_manager import (
     calculate_lot, lot_plan, calculate_sl_tp, check_risk_reward,
-    can_open_trade, get_total_daily_pnl
+    can_open_trade, get_total_daily_pnl, capital_tier, spread_ok,
 )
+from . import ml_filter
 from .trade_manager import (
     open_trade, close_all_trades,
     manage_open_trades, is_too_close_to_existing
@@ -207,7 +208,11 @@ def _run_cycle():
 
     # ── 9. Intentar abrir un nuevo trade si hay señal válida ──────────────────
     if signal["action"] in ("BUY", "SELL"):
-        _try_open_trade(signal, price, tick, atr)
+        bundle = ml_filter.bundle_for(SYMBOL)      # None si el filtro predictivo está apagado
+        feats = ml_filter.features(1 if signal["action"] == "BUY" else -1, price, ind_primary,
+                                   ind_trend, ind_higher, signal, tick.ask - tick.bid,
+                                   tick.time) if bundle else None
+        _try_open_trade(signal, price, tick, atr, (bundle, feats))
 
     # ── 10. Resumen periódico ─────────────────────────────────────────────────
     if _cycle_num % 20 == 0:
@@ -221,13 +226,16 @@ def _log_lot_capacity(acc, tick, atr: float):
     lot, need = lot_plan(acc, _symbol_info, sl_dist)
     nxt = (f"siguiente lote con capital ≥ {need:,.2f}" if need is not None
            else "lote máximo alcanzado")
+    capital = min(acc.balance, acc.equity)
+    tier = capital_tier(capital)
     logger.info(
-        f"💰 Capital {min(acc.balance, acc.equity):,.2f} (riesgo {RISK_PER_TRADE*100:.1f}%) → "
+        f"💰 Capital {capital:,.2f} · nivel {tier['name']} (máx {tier['max_open']} abiertas, "
+        f"corte diario {tier['daily_loss']*100:.0f}%) · riesgo {RISK_PER_TRADE*100:.1f}% → "
         f"lote {lot if lot > 0 else 'ninguno: no cabe el mínimo'} con SL {sl_dist:.2f} | {nxt}"
     )
 
 
-def _try_open_trade(signal: dict, price: float, tick, atr: float):
+def _try_open_trade(signal: dict, price: float, tick, atr: float, ml=(None, None)):
     """
     Orquesta la apertura de un trade después de validar todas las condiciones.
 
@@ -257,16 +265,34 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float):
         logger.info(f"⚠  {action} ignorado: posición existente demasiado cercana.")
         return
 
+    # B2. Filtro predictivo: solo señales con P(TP antes que SL) ≥ τ, con el SL/TP del modelo
+    bundle, feats = ml
+    sl_m = tp_m = min_rr = None
+    if bundle:
+        allowed, p = ml_filter.allows(bundle, feats)
+        if not allowed:
+            logger.info(f"🧠 {action} descartado: P(éxito) {p:.0%} < umbral {bundle['tau']:.0%}")
+            return
+        sl_m, tp_m = bundle["sl_mult"], bundle["tp_mult"]
+        min_rr = tp_m / sl_m * 0.9
+        logger.info(f"🧠 {action} aprobado: P(éxito) {p:.0%} ≥ {bundle['tau']:.0%} "
+                    f"(SL {sl_m}×ATR / TP {tp_m}×ATR)")
+
     # C. Precio de ejecución real (ask para BUY, bid para SELL)
     exec_price = tick.ask if action == "BUY" else tick.bid
 
     # D. Calcular SL y TP
-    sl, tp = calculate_sl_tp(action, exec_price, atr, _symbol_info)
+    sl, tp = calculate_sl_tp(action, exec_price, atr, _symbol_info, sl_m, tp_m)
 
     # D2. Verificar R:R real (el broker puede deformarlo con su distancia mínima)
-    rr_ok, rr = check_risk_reward(exec_price, sl, tp)
+    rr_ok, rr = check_risk_reward(exec_price, sl, tp, min_rr)
     if not rr_ok:
-        logger.info(f"🚫 Trade {action} descartado: R:R real {rr:.2f} < mínimo {MIN_RR}")
+        logger.info(f"🚫 Trade {action} descartado: R:R real {rr:.2f} < mínimo {min_rr or MIN_RR}")
+        return
+
+    # D3. El spread es un costo fijo: con stops cortos se come la ventaja
+    if not spread_ok(tick.ask - tick.bid, abs(exec_price - sl)):
+        logger.info(f"🚫 Trade {action} descartado: spread {tick.ask - tick.bid:.2f} > 25% del stop")
         return
 
     # E. Calcular lote con la distancia REAL del SL (el broker puede haberla ampliado)
