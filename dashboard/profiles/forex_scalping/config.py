@@ -1,0 +1,9 @@
+"""Perfil del panel: DIVISAS · SCALPING. Independiente de las demás clases (ver _base.py)."""
+import runpy
+from pathlib import Path
+
+globals().update(runpy.run_path(str(Path(__file__).resolve().parents[1] / "_base.py"))["profile"](
+    "forex_scalping", base="eurusd_scalping_bot", tf="M15",
+    sections={"Divisas": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]},
+    # ── Parámetros calibrados para esta clase (backtesting/calibrate.py) ──
+))

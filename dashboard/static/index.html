@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aurum Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Sistema: ui-ux-pro-max "fintech dashboard" — oscuro slate, verde/rojo semántico, dorado de marca,
+   Fira Sans (texto) + Fira Code (cifras). Sin emojis: iconos SVG del sprite de abajo. Ver docs/DESIGN_SYSTEM.md */
+:root{
+  color-scheme:dark;
+  --bg:#060a16; --bg-2:#0b1122; --surface:#0f172a; --surface-2:#141d33; --line:#1f2a44; --line-2:#2b3958;
+  --ink:#e8edf7; --ink-2:#b4bfd6; --muted:#7c89a8;
+  --gold:#e9b949; --gold-2:#f6d78a; --gold-ink:#1a1302;
+  --up:#22c55e; --up-2:#16a34a; --up-soft:rgba(34,197,94,.12);
+  --down:#f43f5e; --down-2:#e11d48; --down-soft:rgba(244,63,94,.12);
+  --warn:#f59e0b; --warn-soft:rgba(245,158,11,.12); --info:#38bdf8; --info-soft:rgba(56,189,248,.12);
+  --r-sm:8px; --r:12px; --r-lg:16px;
+  --f-sans:"Fira Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"Fira Code",ui-monospace,"Cascadia Code",Consolas,monospace;
+  --ease:cubic-bezier(.2,.8,.2,1);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-sans);font-size:15px;line-height:1.55;
+  background-image:radial-gradient(900px 500px at 85% -10%,rgba(233,185,73,.07),transparent 60%),
+                   radial-gradient(700px 500px at -10% 10%,rgba(56,189,248,.06),transparent 60%)}
+svg.i{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--gold);outline-offset:2px;border-radius:6px}
+a{color:var(--info)}
+.num{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+
+/* ── Encabezado ── */
+header{position:sticky;top:0;z-index:30;background:rgba(6,10,22,.86);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.bar{max-width:1360px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.3px}
+.brand .mark{width:30px;height:30px}
+.brand small{display:block;font-weight:500;font-size:11px;color:var(--muted);letter-spacing:1.2px;text-transform:uppercase}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav button{display:flex;align-items:center;gap:7px;background:none;border:0;padding:8px 12px;border-radius:var(--r-sm);
+  color:var(--muted);font-size:14px;font-weight:500;transition:color .2s,background .2s}
+nav button:hover{color:var(--ink);background:var(--surface)}
+nav button[aria-current="page"]{color:var(--ink);background:var(--surface-2);box-shadow:inset 0 -2px 0 var(--gold)}
+.clock{margin-left:auto;text-align:right;line-height:1.2}
+.clock b{font-family:var(--f-mono);font-size:18px;font-weight:600}
+.clock small{display:block;color:var(--muted);font-size:11px}
+
+main{max-width:1360px;margin:0 auto;padding:24px 20px 64px}
+section.page{display:none}
+section.page.on{display:block;animation:in .3s var(--ease)}
+@keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+h1{font-size:clamp(24px,3.2vw,34px);line-height:1.15;margin:0 0 6px;font-weight:700;letter-spacing:-.3px}
+h2{font-size:19px;margin:0 0 12px;font-weight:600;display:flex;align-items:center;gap:8px}
+h3{font-size:16px;margin:0 0 6px;font-weight:600}
+.lede{color:var(--ink-2);max-width:72ch;margin:0 0 22px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px;min-width:0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:16px}
+.k{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 9px;border-radius:999px;
+  background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line-2);white-space:nowrap}
+.chip.up{background:var(--up-soft);color:var(--up);border-color:transparent}
+.chip.down{background:var(--down-soft);color:var(--down);border-color:transparent}
+.chip.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.chip.gold{background:rgba(233,185,73,.12);color:var(--gold);border-color:transparent}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.banner{display:none;margin-bottom:16px;padding:12px 16px;border-radius:var(--r);background:var(--down-soft);border:1px solid rgba(244,63,94,.35);color:#ffd3db}
+
+/* ── Inicio ── */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
+.kpi b{display:block;font-family:var(--f-mono);font-size:22px;font-weight:600;margin-top:4px}
+.kpi small{color:var(--muted)}
+.sess{display:grid;gap:10px}
+.srow{display:grid;grid-template-columns:140px 1fr 210px;gap:14px;align-items:center}
+.srow .name b{display:block;font-size:14px}
+.srow .name small{color:var(--muted);font-size:12px}
+.track{position:relative;height:12px;border-radius:999px;background:var(--bg-2);border:1px solid var(--line);overflow:hidden}
+.track .band{position:absolute;top:0;bottom:0;background:linear-gradient(90deg,rgba(233,185,73,.55),rgba(233,185,73,.85))}
+.track .now{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink);box-shadow:0 0 0 2px rgba(6,10,22,.8)}
+.srow .st{text-align:right;font-size:13px}
+.srow .st small{display:block;color:var(--muted);font-family:var(--f-mono)}
+.hours{display:flex;justify-content:space-between;margin:6px 224px 0 154px;color:var(--muted);font-size:11px;font-family:var(--f-mono)}
+.list{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.ev{display:grid;grid-template-columns:110px 1fr auto;gap:10px;align-items:center;padding:8px 10px;border-radius:var(--r-sm);background:var(--bg-2);border:1px solid var(--line)}
+.ev time{font-family:var(--f-mono);font-size:13px;color:var(--ink-2)}
+.empty{color:var(--muted);font-size:14px;padding:8px 0}
+
+/* ── Mercados ── */
+.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.seg{display:inline-flex;flex-wrap:wrap;padding:3px;border-radius:var(--r);background:var(--surface);border:1px solid var(--line)}
+.seg button{border:0;background:none;padding:7px 14px;border-radius:9px;color:var(--muted);font-size:14px;font-weight:500;transition:.2s}
+.seg button[aria-pressed="true"]{background:var(--surface-2);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line-2)}
+.upd{margin-left:auto;color:var(--muted);font-size:13px;display:flex;align-items:center;gap:8px}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--up);animation:ping 1.8s infinite;flex:none}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(34,197,94,.55)}100%{box-shadow:0 0 0 10px rgba(34,197,94,0)}}
+.hint{color:var(--muted);font-size:13px;margin:0 0 16px;max-width:110ch}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:14px}
+.card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px;transition:border-color .2s,transform .2s var(--ease)}
+.card:hover{border-color:var(--line-2);transform:translateY(-2px)}
+.card.bull{border-top:2px solid var(--up)} .card.bear{border-top:2px solid var(--down)}
+.ctop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.sym{font-weight:700;font-size:18px;letter-spacing:.3px}
+.cname{color:var(--muted);font-size:12px;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.price{font-family:var(--f-mono);font-size:26px;font-weight:600;margin:8px 0 2px;transition:color .4s}
+.price.up{color:var(--up)} .price.down{color:var(--down)}
+.stats{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--muted);font-size:12px}
+.stats b{color:var(--ink-2);font-family:var(--f-mono);font-weight:500}
+.gauge{position:relative;height:8px;margin:14px 0 4px;border-radius:999px;background:var(--bg-2);border:1px solid var(--line)}
+.gauge .fill{position:absolute;top:0;bottom:0;border-radius:999px;transition:all .5s var(--ease)}
+.gauge .mk{position:absolute;top:-4px;bottom:-4px;width:1px;background:var(--line-2)}
+.gauge .mk.z{background:var(--muted)}
+.glab{display:flex;justify-content:space-between;font-size:11px;color:var(--muted)}
+.act{width:100%;margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:var(--r);
+  padding:12px;font-weight:700;font-size:14px;letter-spacing:.4px;transition:transform .15s,filter .2s}
+.act:hover:not(:disabled){filter:brightness(1.1)} .act:active:not(:disabled){transform:scale(.98)}
+.act.bull{background:linear-gradient(180deg,var(--up),var(--up-2));color:#04150a}
+.act.bear{background:linear-gradient(180deg,var(--down),var(--down-2));color:#fff}
+.act.strong.bull{animation:flashG 1.2s ease-in-out infinite} .act.strong.bear{animation:flashR 1.2s ease-in-out infinite}
+.act.weak{opacity:.92;animation:breathe 2.8s ease-in-out infinite}
+.act:disabled{background:var(--surface-2);color:var(--muted);cursor:not-allowed;animation:none}
+@keyframes flashG{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.6)}50%{box-shadow:0 0 0 7px rgba(34,197,94,0),0 0 22px rgba(34,197,94,.55)}}
+@keyframes flashR{0%,100%{box-shadow:0 0 0 0 rgba(244,63,94,.6)}50%{box-shadow:0 0 0 7px rgba(244,63,94,0),0 0 22px rgba(244,63,94,.55)}}
+@keyframes breathe{0%,100%{filter:brightness(.95)}50%{filter:brightness(1.12)}}
+.plan{margin-top:10px;font-size:12px;color:var(--ink-2);display:grid;gap:4px}
+.plan .warnline{color:var(--warn);display:flex;gap:6px;align-items:flex-start}
+.ml{margin-top:10px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:12px;padding:7px 10px;border-radius:var(--r-sm);background:var(--bg-2);border:1px solid var(--line)}
+.ml span{display:inline-flex;gap:6px;align-items:center}
+.ml.ok{border-color:rgba(34,197,94,.35)} .ml.no{border-color:rgba(245,158,11,.35)}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+details{margin-top:8px;font-size:12px;color:var(--muted)}
+details summary{cursor:pointer;color:var(--ink-2)}
+details li{margin:3px 0}
+.skel{height:300px;border-radius:var(--r-lg);background:linear-gradient(100deg,var(--surface) 30%,var(--surface-2) 50%,var(--surface) 70%);background-size:200% 100%;animation:sh 1.4s infinite}
+@keyframes sh{to{background-position:-200% 0}}
+
+/* ── Noticias ── */
+.news{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px}
+.item{display:block;padding:12px 0;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink)}
+.item:hover .t{color:var(--gold-2)}
+.item .t{font-weight:500;transition:color .2s}
+.item .m{display:flex;gap:10px;color:var(--muted);font-size:12px;margin-top:4px;align-items:center;flex-wrap:wrap}
+.cal{width:100%;border-collapse:collapse;font-size:13px}
+.cal td,.cal th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.cal th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+
+/* ── Modal y avisos ── */
+.modal{position:fixed;inset:0;display:none;place-items:center;padding:16px;background:rgba(2,4,10,.72);backdrop-filter:blur(4px);z-index:50}
+.modal.on{display:grid}
+.dialog{width:min(470px,100%);background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:22px;box-shadow:0 30px 80px rgba(0,0,0,.55)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:8px 16px;margin:16px 0;font-size:14px}
+.kv span{color:var(--muted)} .kv b{font-family:var(--f-mono);font-weight:500}
+.note{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:var(--r-sm);font-size:13px;margin-bottom:10px}
+.note.warn{background:var(--warn-soft);color:#fde3b0} .note.info{background:var(--info-soft);color:#cdeefe}
+.row{display:flex;gap:10px} .row button{flex:1}
+.ghost{background:none;border:1px solid var(--line-2);border-radius:var(--r);padding:12px}
+.toasts{position:fixed;right:16px;bottom:16px;display:grid;gap:10px;z-index:60;max-width:min(430px,calc(100vw - 32px))}
+.toast{display:flex;gap:10px;padding:14px 16px;border-radius:var(--r);background:var(--surface-2);border:1px solid var(--line-2);box-shadow:0 16px 40px rgba(0,0,0,.5);animation:slide .3s var(--ease);font-size:14px}
+.toast.ok{border-color:rgba(34,197,94,.5)} .toast.ok svg{color:var(--up)}
+.toast.err{border-color:rgba(244,63,94,.5)} .toast.err svg{color:var(--down)}
+.toast small{display:block;color:var(--muted);margin-top:3px}
+@keyframes slide{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:none}}
+.burst{position:absolute;inset:0;border-radius:var(--r-lg);pointer-events:none;animation:burst .9s ease-out forwards}
+@keyframes burst{from{box-shadow:inset 0 0 0 0 rgba(233,185,73,.8)}to{box-shadow:inset 0 0 0 36px rgba(233,185,73,0)}}
+
+/* ── Páginas de contenido ── */
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(270px,100%),1fr));gap:14px}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;font-size:14px;color:var(--ink-2)}
+.box h3{color:var(--ink);display:flex;gap:8px;align-items:center}
+.box h3 svg{color:var(--gold)}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r)}
+table.t{width:100%;border-collapse:collapse;font-size:14px;background:var(--surface)}
+table.t th,table.t td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+table.t th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
+.steps{counter-reset:s;display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.steps li{counter-increment:s;position:relative;padding:12px 14px 12px 50px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);font-size:14px}
+.steps li::before{content:counter(s);position:absolute;left:12px;top:11px;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;
+  font-family:var(--f-mono);font-weight:600;font-size:13px;color:var(--gold-ink);background:var(--gold)}
+.candles{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+.candle{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px;text-align:center;font-size:12px;color:var(--muted)}
+.candle svg{width:100%;height:100px}
+.candle b{display:block;color:var(--ink);font-size:14px;margin:4px 0 2px}
+.faq details{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;margin-bottom:8px;font-size:14px;color:var(--ink-2)}
+.faq summary{color:var(--ink);font-weight:600;font-size:15px}
+.faq p,.faq ul,.faq ol{margin:10px 0 0}
+code{font-family:var(--f-mono);font-size:13px;background:var(--bg-2);border:1px solid var(--line);padding:1px 6px;border-radius:6px;word-break:break-word}
+footer{max-width:1360px;margin:0 auto;padding:0 20px 40px;color:var(--muted);font-size:12px}
+@media (max-width:760px){
+  header{position:static}
+  .bar{gap:8px;padding:10px 16px}main{padding:20px 16px 56px}
+  nav{order:3;width:100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  nav button{white-space:nowrap;padding:8px 10px}
+  .clock{margin-left:auto}.clock small{display:none}
+  .kpis{grid-template-columns:1fr 1fr}.kpi b{font-size:18px}
+  .srow{grid-template-columns:1fr;gap:6px}.srow .st{text-align:left}.hours{display:none}
+  .news{grid-template-columns:1fr}.ev{grid-template-columns:1fr}.upd{margin-left:0}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></symbol>
+  <symbol id="i-markets" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></symbol>
+  <symbol id="i-news" viewBox="0 0 24 24"><path d="M4 5h13v14H6a2 2 0 0 1-2-2z"/><path d="M17 8h3v9a2 2 0 0 1-2 2"/><path d="M8 9h5M8 13h5M8 17h3"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-candles" viewBox="0 0 24 24"><path d="M7 3v4M7 17v4M17 3v6M17 19v2"/><rect x="5" y="7" width="4" height="10" rx="1"/><rect x="15" y="9" width="4" height="10" rx="1"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4z"/><path d="M20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="m5.6 5.6 3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V4.5A2.5 2.5 0 0 0 9 4z"/><path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M16 15h2"/></symbol>
+</svg>
+
+<header>
+  <div class="bar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6d78a"/><stop offset="1" stop-color="#c8901f"/></linearGradient></defs>
+        <path d="M16 2 29 9.5v13L16 30 3 22.5v-13z" fill="url(#g)"/><path d="M10 21 16 9l6 12M12.5 17h7" stroke="#1a1302" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div>Aurum<small>Panel de trading · MT5</small></div>
+    </div>
+    <nav id="nav" aria-label="Secciones">
+      <button data-p="home" aria-current="page"><svg class="i"><use href="#i-home"/></svg>Inicio</button>
+      <button data-p="markets"><svg class="i"><use href="#i-markets"/></svg>Mercados</button>
+      <button data-p="news"><svg class="i"><use href="#i-news"/></svg>Noticias</button>
+      <button data-p="about"><svg class="i"><use href="#i-info"/></svg>Acerca del bot</button>
+      <button data-p="candles"><svg class="i"><use href="#i-candles"/></svg>Velas</button>
+      <button data-p="concepts"><svg class="i"><use href="#i-book"/></svg>Conceptos</button>
+      <button data-p="support"><svg class="i"><use href="#i-help"/></svg>Soporte</button>
+    </nav>
+    <div class="clock" aria-live="off"><b id="clock">--:--:--</b><small id="tz">hora del sistema</small></div>
+  </div>
+</header>
+
+<main>
+<div class="banner" id="banner" role="alert"></div>
+
+<!-- ═══════════════ INICIO ═══════════════ -->
+<section class="page on" id="p-home" aria-labelledby="h-home">
+  <h1 id="h-home">Buenos días</h1>
+  <p class="lede">Estado de tu cuenta, horario de los mercados en la hora de este equipo y lo próximo en el calendario económico.</p>
+  <div class="kpis">
+    <div class="kpi"><span class="k">Balance</span><b id="k-bal">—</b><small id="k-cur"></small></div>
+    <div class="kpi"><span class="k">Equity</span><b id="k-eq">—</b><small>capital con lo abierto</small></div>
+    <div class="kpi"><span class="k">Nivel de cuenta</span><b id="k-tier">—</b><small id="k-tier-d"></small></div>
+    <div class="kpi"><span class="k">Señales completas</span><b id="k-sig">—</b><small id="k-sig-d">scalping + swing</small></div>
+  </div>
+  <div class="grid2">
+    <div class="panel">
+      <h2><svg class="i"><use href="#i-clock"/></svg>Sesiones de mercado · hoy en tu hora local</h2>
+      <div class="sess" id="sessions"></div>
+      <div class="hours"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+    </div>
+    <div class="panel">
+      <h2><svg class="i"><use href="#i-alert"/></svg>Próximos eventos de alto impacto</h2>
+      <ul class="list" id="home-events"><li class="empty">Cargando calendario…</li></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ MERCADOS ═══════════════ -->
+<section class="page" id="p-markets" aria-labelledby="h-markets">
+  <h1 id="h-markets">Mercados</h1>
+  <div class="controls">
+    <div class="seg" id="modeSeg" role="group" aria-label="Modo">
+      <button data-m="swing" aria-pressed="true">Swing</button>
+      <button data-m="scalping" aria-pressed="false">Scalping</button>
+    </div>
+    <div class="seg" id="secSeg" role="group" aria-label="Clase de activo"></div>
+    <div class="upd"><span class="pulse" aria-hidden="true"></span><span id="upd">Esperando análisis…</span></div>
+  </div>
+  <p class="hint">Cada clase de activo usa su propio perfil calibrado. El botón destella fuerte cuando la señal está completa (score sobre el umbral,
+    filtros en verde y, si hay modelo, probabilidad sobre su umbral), y suave cuando solo hay un sesgo. Al confirmar se abre la orden en tu cuenta
+    <b>DEMO</b> con el lote dinámico y el SL/TP del perfil. Las órdenes del panel no tienen trailing: solo las protegen su SL y su TP.</p>
+  <div id="edge"></div>
+  <div class="cards" id="cards"></div>
+</section>
+
+<!-- ═══════════════ NOTICIAS ═══════════════ -->
+<section class="page" id="p-news" aria-labelledby="h-news">
+  <h1 id="h-news">Noticias y calendario</h1>
+  <p class="lede">Titulares financieros de Google Noticias, CNBC e Investing.com, y los eventos económicos de la semana. Todas las horas están en la hora de este equipo.</p>
+  <div class="news">
+    <div class="panel"><h2><svg class="i"><use href="#i-news"/></svg>Titulares</h2><div id="news-list"><p class="empty">Cargando…</p></div></div>
+    <div class="panel"><h2><svg class="i"><use href="#i-clock"/></svg>Calendario económico</h2>
+      <div style="overflow-x:auto"><table class="cal"><thead><tr><th>Cuándo</th><th>Evento</th><th>Imp.</th><th>Prev. / Ant.</th></tr></thead>
+      <tbody id="cal-body"><tr><td colspan="4" class="empty">Cargando…</td></tr></tbody></table></div>
+      <p class="empty" id="news-err"></p></div>
+  </div>
+</section>
+
+<!-- ═══════════════ ACERCA ═══════════════ -->
+<section class="page" id="p-about" aria-labelledby="h-about">
+  <h1 id="h-about">Un bot de trading con reglas claras</h1>
+  <p class="lede">Bot para MetaTrader 5 nacido para el oro (XAU/USD) y extendido a divisas, metales, acciones y ETF cripto. No es una caja negra:
+    un sistema de puntuación con reglas fijas, un filtro predictivo validado con datos que nunca vio y una gestión de riesgo que cambia con tu capital.</p>
+  <h2><svg class="i"><use href="#i-layers"/></svg>Cómo decide</h2>
+  <div class="cols">
+    <div class="box"><h3><svg class="i"><use href="#i-markets"/></svg>Puntuación ponderada</h3>Cada indicador vota a favor de comprar o vender y su voto
+      se multiplica por un peso. La suma es el score; solo hay señal si supera el umbral de la clase de activo.</div>
+    <div class="box"><h3><svg class="i"><use href="#i-up"/></svg>Seguidor de tendencia</h3>Opera a favor de la tendencia (EMAs alineadas) y suele entrar en
+      los retrocesos, cuando RSI, Bollinger o un soporte dicen que el precio está barato dentro de esa tendencia.</div>
+    <div class="box"><h3><svg class="i"><use href="#i-layers"/></svg>Un perfil por clase</h3>Divisas, metales y acciones tienen configuraciones independientes
+      (umbral, SL/TP, reglas), calibradas por separado con walk-forward: lo que sirve al oro ya no se impone a un par de divisas.</div>
+    <div class="box"><h3><svg class="i"><use href="#i-brain"/></svg>Filtro predictivo</h3>Un modelo de gradient boosting estima la probabilidad de que la señal llegue
+      al TP antes que al SL. Solo se activa en los activos donde, fuera de muestra, logró al menos 75% de acierto ganando dinero.</div>
+    <div class="box"><h3><svg class="i"><use href="#i-wallet"/></svg>Según tu capital</h3>Micro (&lt; 500 USD): 1 operación a la vez y corte diario de 5%.
+      Pequeño (500–2 000): 2 operaciones y 7%. Estándar: reglas completas. Riesgo normal 1%; si el lote mínimo arriesga más, se permite hasta 5%
+      avisando "riesgo elevado".</div>
+    <div class="box"><h3><svg class="i"><use href="#i-shield"/></svg>Protecciones</h3>Solo cuentas demo salvo autorización, límite diario por bot y de toda la cuenta,
+      filtro de noticias, spread máximo del 25% del stop y break-even más trailing en los bots.</div>
+  </div>
+  <h2 style="margin-top:24px">Qué analiza</h2>
+  <div class="tbl"><table class="t">
+    <tr><th>Componente</th><th>Qué mide</th><th>Cómo vota</th></tr>
+    <tr><td>EMA 9/21/50/200</td><td>Dirección y orden de las medias</td><td>Cascada alcista suma, bajista resta. Es el voto de más peso.</td></tr>
+    <tr><td>RSI (14)</td><td>Fuerza del impulso</td><td>Zona baja en tendencia alcista suma; zona alta en bajista resta.</td></tr>
+    <tr><td>MACD</td><td>Cambio de impulso</td><td>Cruces e histograma creciente o decreciente.</td></tr>
+    <tr><td>Bandas de Bollinger</td><td>Precio caro o barato frente a su rango</td><td>Banda baja suma, banda alta resta; detecta compresión.</td></tr>
+    <tr><td>Soportes y resistencias</td><td>Pivotes y rango de 24 h</td><td>Rebote en soporte suma, rechazo en resistencia resta.</td></tr>
+    <tr><td>VWAP y volumen</td><td>Precio justo del día y participación</td><td>Precio sobre el VWAP suma; el volumen confirma rupturas.</td></tr>
+    <tr><td>Velas japonesas</td><td>44 patrones de 1, 2, 3 y 5 velas</td><td>Suma de patrones, con tope de ±4.</td></tr>
+    <tr><td>Temporalidad superior</td><td>Tendencia del gráfico mayor</td><td>Empuja el score y puede vetar ventas contra una tendencia alcista.</td></tr>
+  </table></div>
+  <h2 style="margin-top:24px">El ciclo, paso a paso</h2>
+  <ol class="steps">
+    <li>Comprueba la conexión con MT5 y que la cuenta sea demo.</li>
+    <li>Lee las velas de las tres temporalidades, sin la que se está formando.</li>
+    <li>Gestiona lo abierto: break-even y trailing cuando ya va en ganancia.</li>
+    <li>Calcula indicadores, patrones y el score; aplica los filtros.</li>
+    <li>Si hay señal y el modelo predictivo la aprueba, calcula SL, TP y el lote según tu capital y el riesgo.</li>
+    <li>Envía la orden y la registra.</li>
+  </ol>
+</section>
+
+<!-- ═══════════════ VELAS ═══════════════ -->
+<section class="page" id="p-candles" aria-labelledby="h-candles">
+  <h1 id="h-candles">Velas japonesas</h1>
+  <p class="lede">Cada vela resume un periodo: el cuerpo va de la apertura al cierre (verde si cerró arriba) y las mechas marcan el máximo y el mínimo.
+    El bot revisa 44 patrones; su suma se limita a ±4 para que las velas confirmen pero nunca decidan solas. Un mismo dibujo cambia de sentido según la
+    tendencia: un martillo en caída es alcista; el mismo dibujo en subida es un "hombre colgado".</p>
+  <div class="candles" id="candleGrid"></div>
+  <h2 style="margin-top:24px">Todos los patrones que detecta</h2>
+  <div class="cols">
+    <div class="box"><h3>1 vela (12)</h3>Doji, Doji lápida, Doji libélula, Doji de patas largas, Martillo, Hombre colgado, Martillo invertido, Estrella fugaz,
+      Marubozu alcista y bajista, Peonza, Onda alta.</div>
+    <div class="box"><h3>2 velas (15)</h3>Envolvente, Harami y Harami cruz (alcistas y bajistas), suelo y techo en pinzas, Pauta penetrante,
+      Cubierta de nube oscura, Kicker, Líneas de encuentro, On Neck.</div>
+    <div class="box"><h3>3 velas (15)</h3>Estrella de la mañana y de la tarde (y sus versiones doji), Tri-estrella, Tres soldados blancos, Tres cuervos negros,
+      Tres por dentro y por fuera, Bebé abandonado, Bloque de avance.</div>
+    <div class="box"><h3>5 velas (2)</h3>Tres métodos ascendentes y descendentes: pausas de continuación dentro de una tendencia.</div>
+  </div>
+</section>
+
+<!-- ═══════════════ CONCEPTOS ═══════════════ -->
+<section class="page" id="p-concepts" aria-labelledby="h-concepts">
+  <h1 id="h-concepts">Conceptos clave</h1>
+  <p class="lede">Lo mínimo para entender qué hace el bot y qué ves en el panel.</p>
+  <div class="cols" id="conceptGrid"></div>
+</section>
+
+<!-- ═══════════════ SOPORTE ═══════════════ -->
+<section class="page" id="p-support" aria-labelledby="h-support">
+  <h1 id="h-support">Soporte</h1>
+  <p class="lede">Busca el mensaje que ves. Casi todo es configuración del terminal MT5 o capital disponible.</p>
+  <div class="faq">
+    <details open><summary>Cómo arrancar el panel y los bots</summary><ol>
+      <li>Abre MetaTrader 5 con tu cuenta <b>demo</b> y activa <b>Algo Trading</b>.</li>
+      <li>Desde la carpeta del repo: <code>python run.py dashboard</code>. Se abre <code>http://127.0.0.1:8765</code>.</li>
+      <li>Bots automáticos: <code>python run.py oro</code> (swing H4) o <code>python run.py oro_scalping</code> (M15). No abras dos copias del mismo bot.</li></ol></details>
+    <details><summary>"No se pudo conectar a MT5" o "IPC timeout"</summary><ul>
+      <li>MT5 debe estar abierto, con sesión iniciada, en el mismo usuario de Windows.</li>
+      <li>Cierra cualquier diálogo o actualización pendiente del terminal y reinícialo.</li>
+      <li>Revisa <code>MT5_LOGIN</code>, <code>MT5_PASSWORD</code> y <code>MT5_SERVER</code> en el <code>.env</code>, o deja <code>MT5_LOGIN=0</code>.</li></ul></details>
+    <details><summary>"Riesgo elevado"</summary><p>Con poco capital, el lote mínimo de un activo puede arriesgar más del 1%. El bot lo permite hasta 5%
+      y te avisa cuánto arriesga y con cuánto capital vuelve al 1%. Si ni el 5% alcanza, ese activo no se opera. El tope está en
+      <code>MAX_RISK_MIN_LOT</code>.</p></details>
+    <details><summary>"Límite diario alcanzado"</summary><p>Hay dos frenos: el de cada bot y el de toda la cuenta (10% sumando bots y panel). Al tocarlo,
+      no se abre nada más hasta el día siguiente del servidor.</p></details>
+    <details><summary>"El mercado de este activo está cerrado"</summary><p>Mira las sesiones en Inicio: divisas de domingo 17:00 a viernes 17:00 de Nueva York,
+      metales con pausa diaria de una hora, acciones y ETF solo en horario de Wall Street (9:30–16:00 de Nueva York).</p></details>
+    <details><summary>Un activo dice "No disponible en tu broker"</summary><p>Cada broker nombra distinto (GOLD o XAUUSD). Muéstralo en Observación del mercado
+      o edita las <code>sections</code> del perfil en <code>dashboard/profiles/&lt;clase&gt;_&lt;modo&gt;/config.py</code>.</p></details>
+    <details><summary>Noticias "no disponibles"</summary><p>Vienen de fuentes públicas (Google Noticias, CNBC, Investing.com, ForexFactory). Si una falla o cambia
+      de formato, las demás siguen; se reintenta cada 10 minutos. No afecta al trading.</p></details>
+    <details><summary>"MT5 rechazó la orden" o "MT5 no respondió a tiempo"</summary><ul>
+      <li>Activa Algo Trading en el terminal.</li><li>El símbolo puede estar en "solo cierre" o el mercado cerrado.</li>
+      <li>Si el equipo está muy cargado, la orden se descarta tras 15 s en lugar de abrirse tarde: inténtalo de nuevo.</li></ul></details>
+    <details><summary>¿Dónde veo qué pasó?</summary><p>Logs del panel: <code>dashboard/dashboard_&lt;perfil&gt;.log</code>. Logs de los bots: el
+      <code>.log</code> de cada carpeta. Para la cuenta o el servidor, el soporte de tu broker.</p></details>
+  </div>
+</section>
+</main>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="dlg-title"><div class="dialog" id="dialog"></div></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<footer>Operar con apalancamiento conlleva un alto riesgo de pérdida. Este panel es una herramienta de apoyo y opera en cuenta demo; los resultados pasados no garantizan resultados futuros.</footer>
+
+<script>
+"use strict";
+const TOKEN = "__TOKEN__";
+const LOCALE = undefined;            // idioma y formato del sistema
+const S = {page: "home", mode: "swing", section: null, data: {}, received: {}, news: null, prices: {}, busy: false};
+const $ = q => document.querySelector(q);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const icon = id => `<svg class="i" aria-hidden="true"><use href="#i-${id}"/></svg>`;
+const fmt = (v, d) => v == null ? "—" : Number(v).toLocaleString(LOCALE, {minimumFractionDigits: d, maximumFractionDigits: d});
+const tLocal = (ms, opt) => new Date(ms).toLocaleString(LOCALE, opt);
+const hhmm = ms => tLocal(ms, {hour: "2-digit", minute: "2-digit"});
+const noEmoji = s => String(s).replace(/[\u2190-\u21FF\u2300-\u27BF\u2B00-\u2BFF\u{1F000}-\u{1FAFF}\uFE0F]/gu, "").trim();
+
+/* ── Navegación ── */
+document.querySelectorAll("#nav button").forEach(b => b.onclick = () => {
+  S.page = b.dataset.p;
+  document.querySelectorAll("#nav button").forEach(x => x === b ? x.setAttribute("aria-current", "page") : x.removeAttribute("aria-current"));
+  document.querySelectorAll("section.page").forEach(s => s.classList.toggle("on", s.id === "p-" + S.page));
+  window.scrollTo({top: 0, behavior: "smooth"});
+  if (S.page === "markets") renderMarkets();
+});
+document.querySelectorAll("#modeSeg button").forEach(b => b.onclick = () => {
+  S.mode = b.dataset.m;
+  document.querySelectorAll("#modeSeg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  renderMarkets(); poll(S.mode);
+});
+
+/* ── Reloj y saludo, en la hora del sistema ── */
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+$("#tz").textContent = `${TZ} · hora del sistema`;
+function tick() {
+  const now = new Date();
+  $("#clock").textContent = now.toLocaleTimeString(LOCALE, {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+  const h = now.getHours();
+  $("#h-home").textContent = h < 12 ? "Buenos días" : h < 19 ? "Buenas tardes" : "Buenas noches";
+}
+setInterval(tick, 1000); tick();
+
+/* ── Sesiones de mercado (zonas IANA: el cambio de horario lo resuelve el navegador) ── */
+const FMT = {};
+function zparts(ms, tz) {
+  const f = FMT[tz] || (FMT[tz] = new Intl.DateTimeFormat("en-US", {timeZone: tz, weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23"}));
+  const p = Object.fromEntries(f.formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+  return {d: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday), m: +p.hour * 60 + +p.minute};
+}
+const NY = "America/New_York";
+const fxOpen = ms => { const {d, m} = zparts(ms, NY); return !(d === 6 || (d === 5 && m >= 1020) || (d === 0 && m < 1020)); };
+const local = (tz, a, b) => ms => { const {d, m} = zparts(ms, tz); return d >= 1 && d <= 5 && m >= a && m < b; };
+const SESSIONS = [
+  {name: "Sídney", sub: "Divisas · Asia-Pacífico", open: ms => fxOpen(ms) && local("Australia/Sydney", 420, 960)(ms)},
+  {name: "Tokio", sub: "Divisas · Asia", open: ms => fxOpen(ms) && local("Asia/Tokyo", 540, 1080)(ms)},
+  {name: "Londres", sub: "Divisas · Europa", open: ms => fxOpen(ms) && local("Europe/London", 480, 1020)(ms)},
+  {name: "Nueva York", sub: "Divisas · América", open: ms => fxOpen(ms) && local(NY, 480, 1020)(ms)},
+  {name: "Wall Street", sub: "Acciones y ETF", open: local(NY, 570, 960)},
+  {name: "Oro y plata", sub: "Metales (pausa diaria 1 h)", open: ms => { const {d, m} = zparts(ms, NY);
+     return !(d === 6 || (d === 5 && m >= 1020) || (d === 0 && m < 1080) || (m >= 1020 && m < 1080)); }},
+];
+function nextChange(fn, from) {               // siguiente cambio de estado, en pasos de 5 min (hasta 8 días)
+  const st = fn(from);
+  for (let t = Math.ceil((from + 1) / 300000) * 300000; t < from + 8 * 864e5; t += 300000) if (fn(t) !== st) return t;
+  return null;
+}
+function renderSessions() {
+  const now = Date.now(), mid = new Date(); mid.setHours(0, 0, 0, 0);
+  const dayStart = mid.getTime(), pos = (now - dayStart) / 864e5 * 100;
+  $("#sessions").innerHTML = SESSIONS.map(s => {
+    const bands = []; let open = null;
+    for (let i = 0; i <= 96; i++) {                 // 15 min por paso sobre el día local
+      const o = i < 96 && s.open(dayStart + i * 9e5);
+      if (o && open === null) open = i;
+      if (!o && open !== null) { bands.push([open, i]); open = null; }
+    }
+    const isOpen = s.open(now), nxt = nextChange(s.open, now);
+    const left = nxt ? Math.round((nxt - now) / 6e4) : null;
+    const dur = left == null ? "" : left >= 1440 ? `${Math.floor(left / 1440)} d ${Math.floor(left % 1440 / 60)} h` : `${Math.floor(left / 60)} h ${left % 60} min`;
+    return `<div class="srow"><div class="name"><b>${s.name}</b><small>${s.sub}</small></div>
+      <div class="track" title="Horario de hoy en tu hora local">${bands.map(([a, b]) => `<span class="band" style="left:${a / 96 * 100}%;width:${(b - a) / 96 * 100}%"></span>`).join("")}
+        <span class="now" style="left:${pos}%"></span></div>
+      <div class="st"><span class="chip ${isOpen ? "up" : ""}"><span class="dot"></span>${isOpen ? "Abierta" : "Cerrada"}</span>
+        <small>${nxt ? `${isOpen ? "cierra" : "abre"} ${tLocal(nxt, {weekday: "short", hour: "2-digit", minute: "2-digit"})} · en ${dur}` : ""}</small></div></div>`;
+  }).join("");
+}
+setInterval(renderSessions, 30000); renderSessions();
+
+/* ── Datos del análisis ── */
+async function poll(mode) {
+  try {
+    const j = await (await fetch("/api/analysis?mode=" + mode, {cache: "no-store"})).json();
+    const banner = $("#banner");
+    banner.style.display = j.fatal ? "block" : "none";
+    if (j.fatal) banner.textContent = j.fatal;
+    if (j.ready && j.data.server_time !== S.data[mode]?.server_time && !document.querySelector(".card .act:hover")) {
+      S.data[mode] = j.data; S.received[mode] = Date.now();
+      renderHome(); if (mode === S.mode) renderMarkets();
+    }
+  } catch (e) {
+    const banner = $("#banner"); banner.style.display = "block";
+    banner.textContent = "No hay conexión con el servidor del panel. ¿Sigue abierto python run.py dashboard?";
+  }
+}
+setInterval(() => poll(S.mode), 4000);
+setInterval(() => poll(S.mode === "swing" ? "scalping" : "swing"), 15000);
+poll("swing"); poll("scalping");
+
+function renderHome() {
+  const acc = (S.data.swing || S.data.scalping || {}).account;
+  if (acc) {
+    $("#k-bal").textContent = fmt(acc.balance, 2); $("#k-cur").textContent = `${acc.currency} · ${acc.demo ? "cuenta DEMO" : "cuenta REAL"}`;
+    $("#k-eq").textContent = fmt(acc.equity, 2);
+    $("#k-tier").textContent = acc.tier ? acc.tier.name : "—";
+    $("#k-tier-d").textContent = acc.tier ? `máx ${acc.tier.max_open} abiertas · corte ${fmt(acc.tier.daily_loss * 100, 0)}% diario` : "";
+  }
+  const cards = ["swing", "scalping"].flatMap(m => S.data[m] ? Object.values(S.data[m].sections).flat().map(c => ({...c, m})) : []);
+  const strong = cards.filter(c => c.open && c.action && c.action === c.bias && (!c.ml || c.ml.ok));
+  $("#k-sig").textContent = strong.length;
+  $("#k-sig-d").textContent = strong.length ? strong.slice(0, 4).map(c => `${c.symbol} ${c.action === "BUY" ? "compra" : "venta"} (${c.m})`).join(" · ") : "ninguna ahora mismo";
+}
+
+/* ── Mercados ── */
+function renderMarkets() {
+  const d = S.data[S.mode], grid = $("#cards");
+  if (!d) { grid.innerHTML = '<div class="skel"></div>'.repeat(6); return; }
+  const secs = Object.keys(d.sections);
+  if (!S.section || !secs.includes(S.section)) S.section = secs[0];
+  $("#secSeg").innerHTML = secs.map(s => `<button data-s="${esc(s)}" aria-pressed="${s === S.section}">${esc(s)}</button>`).join("");
+  document.querySelectorAll("#secSeg button").forEach(b => b.onclick = () => { S.section = b.dataset.s; renderMarkets(); });
+  const prof = d.profiles.find(p => p.sections.includes(S.section));
+  const e = prof && prof.edge;
+  $("#edge").innerHTML = !e ? "" : e.edge
+    ? `<div class="note info">${icon("check")}<span>Perfil calibrado: fuera de muestra (3 años, walk-forward) PF ${fmt(e.pf, 2)}, acierto ${fmt(e.win_pct, 1)}%, ${esc(e.trades)} operaciones.</span></div>`
+    : `<div class="note warn">${icon("alert")}<span><b>Sin ventaja probada.</b> Fuera de muestra este perfil perdió (PF ${fmt(e.pf, 2)}, acierto ${fmt(e.win_pct, 1)}%, ${esc(e.trades)} operaciones). Úsalo como referencia, no como señal para operar.</span></div>`;
+  $("#upd").textContent = `${d.label}${prof ? " · " + prof.tfs : ""} · actualizado ${hhmm(S.received[S.mode])}${d.pending.length ? " · cargando " + d.pending.length + " perfil(es)" : ""}`;
+  const opened = new Set([...grid.querySelectorAll("details[open]")].map(x => x.dataset.k));
+  const list = d.sections[S.section] || [];
+  grid.innerHTML = list.map(card).join("");
+  grid.querySelectorAll("details").forEach(x => { if (opened.has(x.dataset.k)) x.open = true; });
+  grid.querySelectorAll(".act[data-sym]").forEach(b => b.onclick = () => confirmTrade(b.dataset.sym));
+  list.forEach(c => { if (c.price != null) S.prices[S.mode + c.symbol] = c.price; });
+}
+
+function card(c) {
+  if (!c.available) return `<article class="card"><div class="sym">${esc(c.symbol)}</div><p class="cname">No disponible en tu broker</p></article>`;
+  if (c.error) return `<article class="card"><div class="sym">${esc(c.symbol)}</div><p class="cname">${esc(noEmoji(c.error))}</p></article>`;
+  const prev = S.prices[S.mode + c.symbol];
+  const dir = prev == null || prev === c.price ? "" : (c.price > prev ? "up" : "down");
+  const bull = c.bias === "BUY", bear = c.bias === "SELL";
+  const strong = c.action === c.bias && (!c.ml || c.ml.ok);
+  const pct = Math.min(Math.abs(c.score) / 12, 1) * 50, thr = c.threshold / 12 * 50;
+  const fill = bull ? `left:50%;width:${pct}%;background:var(--up)` : bear ? `left:${50 - pct}%;width:${pct}%;background:var(--down)` : "width:0";
+  let label, cls = "", dis = "";
+  if (!c.open) { label = `${icon("moon")}Mercado cerrado`; dis = "disabled"; }
+  else if (bull) { label = `${icon("up")}${strong ? "Alcista · abrir compra" : "Sesgo alcista · compra"}`; cls = "bull " + (strong ? "strong" : "weak"); }
+  else if (bear) { label = `${icon("down")}${strong ? "Bajista · abrir venta" : "Sesgo bajista · venta"}`; cls = "bear " + (strong ? "strong" : "weak"); }
+  else { label = "Sin dirección"; dis = "disabled"; }
+  const p = c.plan;
+  let plan = "";
+  if (p) {
+    plan = p.lot > 0
+      ? `<span>Lote <b class="num">${esc(p.lot)}</b> · riesgo <b class="num">${fmt(p.risk_usd, 2)} USD</b>${p.risk_pct != null ? ` (${fmt(p.risk_pct, 1)}%)` : ""} · SL ${fmt(p.sl, c.digits)} · TP ${fmt(p.tp, c.digits)}</span>
+         ${p.elevated ? `<span class="warnline">${icon("alert")}Riesgo elevado${p.capital_needed ? `: vuelve al 1% con ≥ ${fmt(p.capital_needed, 2)} USD` : ""}</span>` : ""}`
+      : `<span class="warnline">${icon("alert")}Ni el lote mínimo cabe en el 5%${p.capital_needed ? `: necesitas ≥ ${fmt(p.capital_needed, 2)} USD` : ""}</span>`;
+  }
+  const tags = [...c.patterns.bullish.map(n => `<span class="chip up">${esc(n)}</span>`), ...c.patterns.bearish.map(n => `<span class="chip down">${esc(n)}</span>`)].join("");
+  const why = c.blockers.length ? c.blockers : (strong ? [] : [`Score ${c.score > 0 ? "+" : ""}${c.score} frente al umbral ±${c.threshold}`]);
+  return `<article class="card ${bull ? "bull" : bear ? "bear" : ""}" id="c-${esc(c.symbol)}">
+    <div class="ctop"><div><div class="sym">${esc(c.symbol)}</div><div class="cname" title="${esc(c.name)}">${esc(c.name)}</div></div>
+      <span class="chip ${c.open ? "up" : ""}"><span class="dot"></span>${c.open ? "Abierto" : "Cerrado"}</span></div>
+    <div class="price ${dir}">${fmt(c.price, c.digits)}</div>
+    <div class="stats"><span>Score <b>${c.score > 0 ? "+" : ""}${fmt(c.score, 2)}</b></span><span>RSI <b>${fmt(c.rsi, 1)}</b></span>
+      <span>ADX <b>${fmt(c.adx, 1)}</b></span><span>ATR <b>${fmt(c.atr, c.digits)}</b></span><span>Spread <b>${esc(c.spread_pts ?? "—")}</b></span></div>
+    <div class="gauge" aria-hidden="true"><span class="mk z" style="left:50%"></span><span class="mk" style="left:${50 - thr}%"></span><span class="mk" style="left:${50 + thr}%"></span>
+      <span class="fill" style="${fill}"></span></div>
+    <div class="glab"><span>Bajista</span><span>umbral ±${esc(c.threshold)}</span><span>Alcista</span></div>
+    <button class="act ${cls}" data-sym="${esc(c.symbol)}" ${dis}>${label}</button>
+    ${plan ? `<div class="plan">${plan}</div>` : ""}
+    ${c.ml ? `<div class="ml ${c.ml.ok ? "ok" : "no"}" title="Acierto fuera de muestra del modelo: ${esc(c.ml.oos_win)}%">
+      <span>${icon("brain")}P(éxito) <b class="num">${fmt(c.ml.p * 100, 0)}%</b></span><span>umbral ${fmt(c.ml.tau * 100, 0)}% · SL ${esc(c.ml.sl_mult)}/TP ${esc(c.ml.tp_mult)}×ATR</span></div>` : ""}
+    ${tags ? `<div class="tags">${tags}</div>` : ""}
+    ${why.length ? `<details data-k="${esc(c.symbol)}"><summary>${c.blockers.length ? "Filtros activos" : "Por qué es solo un sesgo"}</summary><ul>${why.map(r => `<li>${esc(noEmoji(r))}</li>`).join("")}</ul></details>` : ""}
+  </article>`;
+}
+
+/* ── Confirmación y orden ── */
+function findCard(sym) { return Object.values(S.data[S.mode].sections).flat().find(c => c.symbol === sym); }
+function confirmTrade(sym) {
+  const c = findCard(sym); if (!c) return;
+  const action = c.bias, p = c.plan || {}, strong = c.action === action && (!c.ml || c.ml.ok);
+  $("#dialog").innerHTML = `
+    <h2 id="dlg-title">${icon(action === "BUY" ? "up" : "down")}${action === "BUY" ? "Abrir compra" : "Abrir venta"} en ${esc(sym)}</h2>
+    <div style="color:var(--muted);font-size:13px">${esc(c.name)} · ${esc(S.data[S.mode].label)}</div>
+    <div class="kv"><span>Precio aprox.</span><b>${fmt(p.entry, c.digits)}</b><span>Stop Loss</span><b>${fmt(p.sl, c.digits)}</b>
+      <span>Take Profit</span><b>${fmt(p.tp, c.digits)}</b><span>Lote</span><b>${p.lot > 0 ? esc(p.lot) : "no cabe"}</b>
+      <span>Riesgo</span><b>${fmt(p.risk_usd, 2)} USD${p.risk_pct != null ? " · " + fmt(p.risk_pct, 1) + "%" : ""}</b>
+      <span>Score</span><b>${c.score > 0 ? "+" : ""}${fmt(c.score, 2)} / ±${esc(c.threshold)}</b>
+      ${c.ml ? `<span>P(éxito) del modelo</span><b>${fmt(c.ml.p * 100, 0)}% / ${fmt(c.ml.tau * 100, 0)}%</b>` : ""}</div>
+    ${p.elevated ? `<div class="note warn">${icon("alert")}<span>Riesgo elevado: el lote mínimo arriesga ${fmt(p.risk_pct, 1)}% de tu capital.</span></div>` : ""}
+    ${strong ? "" : `<div class="note warn">${icon("alert")}<span>No hay señal completa: score bajo el umbral, un filtro activo o el modelo la ve poco probable.</span></div>`}
+    <div class="note info">${icon("info")}<span>Se abre en tu cuenta DEMO con el SL/TP del perfil. Sin trailing: la protegen su SL y su TP.</span></div>
+    <div class="row"><button class="ghost" id="cancel">Cancelar</button>
+      <button class="act ${action === "BUY" ? "bull" : "bear"}" id="go" style="margin:0">Confirmar ${action === "BUY" ? "compra" : "venta"}</button></div>`;
+  $("#modal").classList.add("on"); $("#go").focus();
+  $("#cancel").onclick = closeModal; $("#go").onclick = () => sendTrade(sym, action);
+}
+function closeModal() { $("#modal").classList.remove("on"); }
+$("#modal").onclick = e => { if (e.target.id === "modal") closeModal(); };
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
+async function sendTrade(sym, action) {
+  if (S.busy) return; S.busy = true;
+  const go = $("#go"); go.disabled = true; go.textContent = "Enviando…";
+  try {
+    const j = await (await fetch("/api/trade", {method: "POST", headers: {"Content-Type": "application/json", "X-Token": TOKEN},
+      body: JSON.stringify({symbol: sym, action, mode: S.mode})})).json();
+    closeModal();
+    if (j.ok) {
+      toast("ok", `Se ha realizado la apertura de una operación <b>${esc(j.action)}</b> en ${esc(j.symbol)}`,
+        `Ticket #${esc(j.ticket)} · lote ${esc(j.lot)} · entrada ${esc(j.price)} · SL ${esc(j.sl)} · TP ${esc(j.tp)} · riesgo ${fmt(j.risk_usd, 2)} USD${j.risk_pct != null ? " (" + fmt(j.risk_pct, 1) + "%)" : ""}`);
+      const el = document.getElementById("c-" + sym);
+      if (el) { const b = document.createElement("div"); b.className = "burst"; el.appendChild(b); setTimeout(() => b.remove(), 1000); }
+      poll(S.mode);
+    } else toast("err", `No se abrió la operación ${esc(action)} en ${esc(sym)}`, esc(noEmoji(j.reason || "Error desconocido")));
+  } catch (e) { closeModal(); toast("err", "No hubo respuesta del panel", "Revisa que el servidor siga abierto."); }
+  finally { S.busy = false; }
+}
+function toast(kind, html, detail) {
+  const t = document.createElement("div");
+  t.className = "toast " + kind;
+  t.innerHTML = `${icon(kind === "ok" ? "check" : "x")}<div>${html}${detail ? `<small>${detail}</small>` : ""}</div>`;
+  $("#toasts").appendChild(t);
+  setTimeout(() => { t.style.transition = "opacity .5s"; t.style.opacity = "0"; setTimeout(() => t.remove(), 500); }, 9000);
+}
+
+/* ── Noticias y calendario (hora del sistema) ── */
+const IMPACT = {High: ["down", "Alto"], Medium: ["warn", "Medio"]};
+async function pollNews() {
+  try { S.news = await (await fetch("/api/news", {cache: "no-store"})).json(); renderNews(); } catch (e) { /* reintenta en el siguiente ciclo */ }
+}
+function renderNews() {
+  const n = S.news; if (!n) return;
+  $("#news-list").innerHTML = n.items.length ? n.items.map(it => `<a class="item" href="${esc(it.link)}" target="_blank" rel="noopener noreferrer">
+      <div class="t">${esc(it.title)}</div><div class="m"><span class="chip">${esc(it.source)}</span>
+      <span>${it.ts ? tLocal(it.ts * 1000, {weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : ""}</span>${icon("ext")}</div></a>`).join("")
+    : `<p class="empty">${n.updated ? "Sin titulares por ahora." : "Cargando…"}</p>`;
+  const now = Date.now() / 1000;
+  $("#cal-body").innerHTML = n.calendar.length ? n.calendar.map(e => `<tr style="${e.ts < now ? "opacity:.5" : ""}">
+      <td class="num">${tLocal(e.ts * 1000, {weekday: "short", day: "numeric", hour: "2-digit", minute: "2-digit"})}</td>
+      <td><b>${esc(e.country)}</b> ${esc(e.title)}</td><td><span class="chip ${IMPACT[e.impact][0]}">${IMPACT[e.impact][1]}</span></td>
+      <td class="num">${esc(e.forecast || "—")} / ${esc(e.previous || "—")}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">${n.updated ? "Calendario no disponible." : "Cargando…"}</td></tr>`;
+  const errs = Object.keys(n.errors || {});
+  $("#news-err").textContent = errs.length ? `No disponible ahora: ${errs.join(", ")}. Se reintenta cada 10 minutos.` : (n.updated ? `Actualizado ${hhmm(n.updated * 1000)}.` : "");
+  const next = n.calendar.filter(e => e.impact === "High" && e.ts > now).slice(0, 6);
+  $("#home-events").innerHTML = next.length ? next.map(e => `<li class="ev"><time>${tLocal(e.ts * 1000, {weekday: "short", hour: "2-digit", minute: "2-digit"})}</time>
+      <span><b>${esc(e.country)}</b> ${esc(e.title)}</span><span class="chip down">Alto</span></li>`).join("")
+    : `<li class="empty">${n.updated ? "Sin eventos de alto impacto pendientes esta semana." : "Cargando calendario…"}</li>`;
+}
+setInterval(pollNews, 60000); pollNews();
+
+/* ── Velas (SVG) ── */
+const CANDLES = [
+  ["Doji", "Indecisión: apertura y cierre casi iguales.", [[50, 80, 20, 51]]],
+  ["Martillo", "Tras una caída, los compradores rechazan los mínimos.", [[70, 75, 45, 62], [60, 64, 34, 50], [50, 52, 10, 47]]],
+  ["Estrella fugaz", "Tras una subida, los vendedores rechazan los máximos.", [[30, 45, 25, 40], [40, 55, 35, 50], [50, 90, 48, 53]]],
+  ["Envolvente alcista", "Una vela verde cubre por completo a la roja anterior.", [[60, 64, 40, 45], [42, 68, 40, 66]]],
+  ["Envolvente bajista", "Una vela roja cubre por completo a la verde anterior.", [[40, 62, 37, 58], [60, 63, 30, 34]]],
+  ["Estrella de la mañana", "Caída, pausa y rebote fuerte: posible suelo.", [[75, 77, 45, 48], [44, 47, 36, 42], [45, 72, 43, 70]]],
+  ["Estrella de la tarde", "Subida, pausa y caída fuerte: posible techo.", [[30, 58, 28, 55], [58, 66, 56, 61], [57, 59, 30, 32]]],
+  ["Tres soldados blancos", "Tres velas verdes con cierres crecientes.", [[30, 46, 28, 44], [42, 60, 40, 58], [56, 74, 54, 72]]],
+  ["Tres cuervos negros", "Tres velas rojas con cierres decrecientes.", [[72, 74, 54, 56], [58, 60, 40, 42], [44, 46, 26, 28]]],
+  ["Harami alcista", "Vela verde pequeña dentro de una roja grande.", [[75, 78, 32, 35], [45, 58, 43, 56]]],
+  ["Marubozu alcista", "Vela verde sin mechas: control comprador.", [[25, 75, 25, 75]]],
+  ["Nube oscura", "La roja abre arriba y cierra bajo la mitad de la verde.", [[35, 62, 33, 60], [66, 68, 42, 44]]],
+];
+function candleSVG(bars) {
+  const w = 200, h = 100, gap = w / (bars.length + 1), y = v => h - 6 - v / 100 * (h - 12);
+  return `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">` + bars.map(([o, hi, lo, c], i) => {
+    const x = gap * (i + 1), col = c >= o ? "#22c55e" : "#f43f5e";
+    return `<line x1="${x}" x2="${x}" y1="${y(hi)}" y2="${y(lo)}" stroke="${col}" stroke-width="2"/>
+      <rect x="${x - 10}" y="${y(Math.max(o, c))}" width="20" height="${Math.max(Math.abs(y(o) - y(c)), 2)}" rx="2" fill="${col}"/>`;
+  }).join("") + "</svg>";
+}
+$("#candleGrid").innerHTML = CANDLES.map(([n, d, b]) => `<div class="candle">${candleSVG(b)}<b>${n}</b>${d}</div>`).join("");
+
+/* ── Conceptos ── */
+const CONCEPTS = [
+  ["ATR", "Cuánto se mueve el precio en promedio por vela. El bot lo usa para el SL, el TP y el trailing: más ATR, stops más lejos y lote más pequeño."],
+  ["Stop Loss y Take Profit", "Precios donde la operación se cierra sola con pérdida o con ganancia. Se fijan en múltiplos de ATR según el perfil."],
+  ["R:R", "Cuánto puedes ganar por cada unidad que arriesgas. Un TP más corto que el SL acierta más veces, pero gana menos en cada una."],
+  ["Lote y riesgo", "El tamaño de la operación. El bot arriesga 1% de tu capital; con poco capital usa el lote mínimo hasta 5% y lo marca como riesgo elevado."],
+  ["Nivel de cuenta", "Micro, Pequeño o Estándar según tu capital: define cuántas operaciones abre a la vez y cuánto puede perder en un día."],
+  ["Break-even y trailing", "Al avanzar hacia el TP, el SL se mueve a la entrada (break-even) y luego persigue al precio para asegurar ganancia."],
+  ["Spread", "Diferencia entre compra y venta: el costo de entrar. El bot descarta la operación si cuesta más del 25% del stop."],
+  ["Probabilidad de éxito", "La estimación del modelo predictivo de que la señal llegue al TP antes que al SL. Se compara con un umbral calibrado."],
+  ["Walk-forward", "Forma honesta de validar: se entrena con el pasado y se mide en los meses siguientes, que el modelo nunca vio."],
+  ["Monte Carlo", "Reordenar al azar miles de veces las operaciones para ver la peor caída probable con mala suerte."],
+  ["Drawdown", "La mayor caída del capital desde un máximo. Mide cuánto hay que aguantar con una estrategia."],
+  ["Sesiones de mercado", "Horarios en que opera cada plaza. El solapamiento Londres–Nueva York suele concentrar el volumen de divisas."],
+  ["Demo y real", "Demo usa dinero ficticio con precios reales. El bot y el panel solo operan demo salvo que actives ALLOW_LIVE_TRADING."],
+  ["Noticias de alto impacto", "Empleo (NFP), inflación (IPC) o tasas (FOMC) mueven el precio en segundos; el bot se aparta en esos minutos."],
+];
+$("#conceptGrid").innerHTML = CONCEPTS.map(([t, d]) => `<div class="box"><h3>${t}</h3>${d}</div>`).join("");
+
+renderMarkets(); renderHome();
+</script>
+</body>
+</html>
