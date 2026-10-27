@@ -1,18 +1,20 @@
 # Bots de Trading MetaTrader 5 · Aurum
 
-Bots de trading automático para **MetaTrader 5**. Nacieron para el oro (XAU/USD) y se extendieron a
-divisas, plata, acciones y ETF cripto. Comparten **un solo motor** (`bot_engine/`). Se suman un panel
+Bots de trading automático para **MetaTrader 5**, enfocados **solo en el oro (XAU/USD)**, igual que el panel
+web. Todo comparte **un solo motor** (`bot_engine/`). Se suman un panel
 web local para operar con un clic y un backtester que reproduce el motor real sobre 3 años de histórico.
 
-- **Cuatro bots automáticos** (oro y EUR/USD, cada uno en swing y scalping), cada uno con su `config.py`.
+- **Tres bots automáticos de oro**: swing, scalping y **scalping + grid + cesta** (varias operaciones
+  cortas a la vez, órdenes límite pendientes, cierre de la cesta por profit total y lote que crece con
+  el capital). Cada uno tiene su `config.py`.
 - **Panel web Aurum.** Tarjetas por activo con dirección en tiempo real y apertura de órdenes demo con
   un clic. Incluye noticias financieras, calendario económico y horarios de mercado en la hora del sistema.
-- **Perfiles independientes por clase de activo.** Divisas, metales y acciones, calibrados por separado
-  con walk-forward.
+- **Tres modelos, un solo activo.** Swing (H1), scalping (M15) y grid + cesta (H1). El panel usa la misma
+  configuración que cada bot (`dashboard/profiles/xauusd_<modo>/`).
 - **Filtro predictivo.** Gradient boosting, validado fuera de muestra y activo solo donde logra ≥ 75 % de
   acierto con ganancia.
-- **Riesgo que se adapta al capital.** Opera desde 100 USD con riesgo elevado acotado al 5 % y límite
-  diario por bot y por cuenta.
+- **Riesgo que se adapta al capital.** Opera desde 50 USD con un riesgo elevado acotado por bot (medido en
+  `reports/small_account.md`), un corte diario, un corte total por drawdown y un límite diario de cuenta.
 
 > **Solo Windows y solo demo.** La API de Python de MT5 necesita el terminal abierto en la misma PC.
 > Los bots y el panel se niegan a operar una cuenta real salvo `ALLOW_LIVE_TRADING=1` en el `.env`.
@@ -32,8 +34,8 @@ web local para operar con un clic y un backtester que reproduce el motor real so
 
 ```mermaid
 flowchart LR
-    B[4 bots automáticos] --> E[bot_engine/]
-    P[Panel web: server.py + 6 workers] --> E
+    B[3 bots de oro] --> E[bot_engine/]
+    P[Panel web: server.py + 7 workers] --> E
     T[Backtest y calibración] --> E
     E <--> MT5[(MetaTrader 5 · demo)]
 ```
@@ -59,7 +61,7 @@ El detalle está en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), y el porqué d
 4. **Lanza** lo que necesites:
    ```bash
    python run.py                  # menú interactivo
-   python run.py oro              # oro swing H4/D1/W1   (también: oro_scalping | eurusd | eurusd_scalping)
+   python run.py oro              # oro swing H1/H4/D1   (también: oro_scalping | oro_grid)
    python run.py dashboard        # panel web → http://127.0.0.1:8765
    ```
    Se detiene con **Ctrl+C**. Las posiciones abiertas quedan en MT5. Cualquier cambio de config
@@ -77,11 +79,11 @@ Bot-XAU-USD/
 ├── bot_engine/            EL MOTOR COMPARTIDO: señales, riesgo, órdenes, filtro predictivo
 ├── xauusd_bot/            config.py + main.py  · oro swing        (magic 20260618)
 ├── xauusd_scalping_bot/   config.py + main.py  · oro scalping     (magic 20260621)
-├── eurusd_bot/            config.py + main.py  · EUR/USD swing    (magic 20260619)
-├── eurusd_scalping_bot/   config.py + main.py  · EUR/USD scalping (magic 20260620)
+├── xauusd_grid_bot/       config.py + main.py  · oro scalping + grid + cesta (magic 20260622)
 ├── dashboard/             panel: server.py, worker.py, static/index.html
-│   └── profiles/          _base.py + 6 perfiles <clase>_<modo>/config.py (magic 20260630)
-├── backtesting/           engine_backtest.py, calibrate.py, README.md
+│   └── profiles/          _base.py y 3 perfiles xauusd_<modo>/config.py (swing, scalping, grid)
+│                          (magic 20260630; la pestaña Grid usa 20260631)
+├── backtesting/           engine_backtest.py, calibrate.py, xau_suite.py, README.md
 ├── models/                modelos .joblib + manifest.json (generados, fuera de git)
 ├── tests/                 test_engine.py
 └── docs/                  ARCHITECTURE, PRD, DESIGN_SYSTEM, adr/, guías por instrumento
@@ -89,26 +91,46 @@ Bot-XAU-USD/
 
 ## Funcionalidades clave
 
-### Los 4 bots
+### Los 3 bots (solo XAUUSD)
 
-| Carpeta | Símbolo | Estilo | Temporalidades | Loop |
-|---|---|---|---|---|
-| `xauusd_bot/` | XAUUSD | Swing | H4 / D1 / W1 | 60 s |
-| `xauusd_scalping_bot/` | XAUUSD | Scalping | M15 / H1 / H4 | 15 s |
-| `eurusd_bot/` | EURUSD | Swing | H1 / H4 / D1 | 60 s |
-| `eurusd_scalping_bot/` | EURUSD | Scalping | M5 / M15 / H1 | 10 s |
+| Carpeta | Estilo | Temporalidades | Loop |
+|---|---|---|---|
+| `xauusd_bot/` | Swing (≈ 1 operación al día) | H1 / H4 / D1 | 30 s |
+| `xauusd_scalping_bot/` | Scalping | M15 / H1 / H4 | 15 s |
+| `xauusd_grid_bot/` | Grid + cesta | H1 / H4 / D1 | 5 s |
 
 Cada bot solo gestiona sus propias posiciones (filtra por su número mágico), así que pueden correr a la
 vez en la misma cuenta. El nombre del oro cambia según el broker (`XAUUSD`, `GOLD`, `XAUUSDm`); se
-ajusta en `SYMBOL`. Las guías detalladas están en [docs/GUIA_GOLD.md](docs/GUIA_GOLD.md) y
-[docs/GUIA_EURUSD.md](docs/GUIA_EURUSD.md).
+ajusta en `SYMBOL`. La guía detallada está en [docs/GUIA_GOLD.md](docs/GUIA_GOLD.md).
+
+### Scalping + grid + cesta (`xauusd_grid_bot/`, `bot_engine/grid.py`)
+
+- **Entrada.** Usa la misma señal del swing H1 (umbral 4.0). Con BUY/SELL abre una **cesta**: el nivel 0 a mercado y
+  `GRID_LEVELS − 1` órdenes **límite pendientes** en contra, cada `GRID_SPACING_ATR × ATR`. Las pendientes
+  solo se activan si el precio llega.
+- **Salidas cortas.** Cada operación tiene un TP corto propio (`GRID_TRADE_TP_ATR`). Al cerrarse, su nivel
+  se vuelve a armar mientras la cesta siga viva.
+- **Stop real.** Todas las órdenes comparten un SL en el bróker, `GRID_STOP_BEYOND_ATR × ATR` más allá
+  del último nivel. Protege aunque el bot se caiga.
+- **Tamaño por riesgo (para no quemar la cuenta).** El lote se calcula para que la cesta **completa**
+  (todos los niveles llenos y el stop tocado) pierda como máximo `GRID_RISK_PCT` del capital. Con poco
+  capital usa menos niveles; al crecer la cuenta vuelven los niveles y sube el lote (lote dinámico). Si ni
+  1 nivel con el lote mínimo cabe en `GRID_MAX_RISK_MIN_LOT`, no abre y dice cuánto capital falta. En
+  martingala (`GRID_LOT_MULT` por nivel) el riesgo total es el mismo.
+- **Cesta.** Se cierra completa al ganar `GRID_BASKET_TP_R ×` su riesgo, en el stop o a los
+  `GRID_MAX_MINUTES`.
+- **Calendario.** Cierra todo el viernes a `GRID_FRIDAY_CLOSE_HOUR` (hora del servidor) y no abre en
+  `GRID_BLOCK_HOURS` (corte diario). Ahí estaban las pérdidas por hueco.
+- **Corte por drawdown.** Si la equity cae `GRID_MAX_DD_PCT` desde su máximo, cierra todo y deja de abrir
+  cestas hasta que se reinicie el bot.
+- **Resultados medidos** en `backtesting/reports/xau_suite.md` (`python backtesting/xau_suite.py`).
 
 ### Panel web (Aurum)
 
 - **Inicio.** Reloj en la hora del sistema, balance y nivel de la cuenta, y las sesiones de Sídney,
-  Tokio, Londres, Nueva York, Wall Street y metales, con barra de 24 h y "abre / cierra en…".
+  Tokio, Londres, Nueva York y el mercado del oro, con barra de 24 h y "abre / cierra en…".
   Debajo, los próximos eventos de alto impacto.
-- **Mercados.** Pestañas Divisas · Metales · Acciones · Cripto (ETF) y modos Swing / Scalping. Cada
+- **Mercados.** Solo XAUUSD, en los modos Swing / Scalping / **Grid**. Grid muestra los niveles de la próxima cesta y el estado de la cesta abierta. Cada
   tarjeta muestra el precio, el score, RSI, ADX, la probabilidad del modelo y el lote con su riesgo.
   El botón **destella** fuerte con una señal completa y suave cuando solo hay sesgo. Al confirmar,
   responde: *"Se ha realizado la apertura de una operación BUY/SELL…"*.
@@ -126,9 +148,19 @@ ajusta en `SYMBOL`. Las guías detalladas están en [docs/GUIA_GOLD.md](docs/GUI
 | Estándar | ≥ 2 000 USD | `MAX_OPEN_TRADES` | `MAX_DAILY_LOSS_PCT` |
 
 - **Riesgo normal.** Es el 1 % por operación.
-- **Riesgo elevado.** Si el lote mínimo arriesga más del 1 % pero ≤ 5 % (`MAX_RISK_MIN_LOT`), se opera
-  y se avisa "riesgo elevado", junto con el capital necesario para volver al 1 %.
-- **Sin operar.** Por encima del 5 % el activo no se opera.
+- **Riesgo elevado.** Si el lote mínimo arriesga más del 1 % pero ≤ `MAX_RISK_MIN_LOT`, se opera y se
+  avisa "riesgo elevado", junto con el capital necesario para volver al 1 %.
+- **Menos de 300 USD (pedido del usuario).** El apalancamiento 1:500 deja abrir 0.01 lote con ≈ 8 USD de
+  margen, pero el stop de 0.01 lote cuesta hoy 10–25 USD. Los topes salen de `backtesting/small_account.py`
+  (último año, arranques de 90 días): swing 50 % + corte total −30 % (`MAX_DD_PCT`), scalping 15 % + −50 %,
+  grid 25 % (con su corte −30 %). Ninguna cuenta se quemó, pero la **mediana pierde** con 50–300 USD
+  (swing −49 % / −30 % / −16 % con 50 / 100 / 300). Con riesgo normal (1 %) los tres ganaron en 2026.
+- **Cuenta pequeña (`MICRO_SL_FIT`, apagado en los 3 bots).** Si ni así cabe el lote mínimo, se **acercan el
+  SL y el TP** (mismo R:R) hasta que quepa, sin bajar de `MICRO_MIN_SL_ATR × ATR` y con el spread ≤ 25 % del
+  stop. Medido: empeora el scalping y el swing H1 (el SL queda en el ruido). Sigue encendido en los perfiles
+  swing del panel (base H4), donde es lo único que deja operar con 50–100 USD. El panel lo marca como
+  "Cuenta pequeña".
+- **Sin operar.** Si ni con el SL acercado cabe, el activo no se opera y se dice cuánto capital falta.
 - **Límite de cuenta.** Hay además un corte del 10 % diario para toda la cuenta, sumando bots y panel
   (`ACCOUNT_MAX_DAILY_LOSS_PCT`).
 - **Spread.** Una operación se descarta si el spread supera el 25 % de su stop.
@@ -136,16 +168,17 @@ ajusta en `SYMBOL`. Las guías detalladas están en [docs/GUIA_GOLD.md](docs/GUI
 ### Backtest, calibración y filtro predictivo
 
 ```bash
-python backtesting/engine_backtest.py xauusd_bot H4 --ml                       # un bot
-python backtesting/engine_backtest.py metals_swing H4 --symbol XAGUSD --ml     # un perfil del panel
-python backtesting/engine_backtest.py forex_swing H1 --symbol EURUSD --set MIN_SIGNAL_SCORE=0.01 --signals-only
-python backtesting/calibrate.py forex_swing --write                            # calibra la clase
+python backtesting/xau_suite.py                                                # los 3 bots en M1/M5/M15/H1 (+H4)
+python backtesting/engine_backtest.py xauusd_bot H1 --ml                       # un bot
+python backtesting/engine_backtest.py xauusd_swing H1 --ml                    # un perfil del panel
+python backtesting/calibrate.py xauusd_scalping_bot --tfs M5,M15              # calibración walk-forward
+python backtesting/small_account.py                                         # riesgo de cuentas chicas
 ```
 
 - **Backtest.** Reproduce el motor real vela a vela con 3 balances (100 / 1 000 / 10 000 USD) y Monte
   Carlo. Con `--ml` entrena el filtro predictivo con walk-forward y purga; el modelo solo se guarda si,
   **fuera de muestra**, logra ≥ 75 % de acierto con PF > 1.
-- **Calibración.** `calibrate.py` elige por clase el umbral, el SL/TP, la regla de ventas y la
+- **Calibración.** `calibrate.py` elige el umbral, el SL/TP, la regla de ventas y la
   temporalidad, y solo escribe en el config si mejora fuera de muestra.
 - **Más detalle** en [backtesting/README.md](backtesting/README.md).
 

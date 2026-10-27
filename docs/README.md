@@ -19,7 +19,6 @@
 | Guía | Cubre |
 |---|---|
 | [GUIA_GOLD.md](GUIA_GOLD.md) | Oro (XAU/USD): bots **swing** y **scalping**. |
-| [GUIA_EURUSD.md](GUIA_EURUSD.md) | EUR/USD: bots **swing** y **scalping**. |
 
 ## Brokers y migración
 

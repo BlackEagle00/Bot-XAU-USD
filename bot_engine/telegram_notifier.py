@@ -5,6 +5,9 @@ Envía un mensaje cuando el bot:
   • arranca / se detiene
   • abre una operación
   • cierra una operación (SL / TP / manual) — detectado al desaparecer el ticket
+
+Además suena un .wav de MT5 en el PC al abrir (alert.wav) y al cerrar (alert2.wav) una
+operación, aunque Telegram esté apagado (TRADE_SOUND=False lo silencia).
   • pierde / recupera la conexión con MT5
 
 Diseño (igual que news_filter.py): solo stdlib (urllib), nunca lanza excepción
@@ -15,6 +18,7 @@ Token y chat_id se cargan desde .env (ver config.py):
     TELEGRAM_BOT_TOKEN   ← te lo da @BotFather al crear el bot
     TELEGRAM_CHAT_ID     ← tu id numérico (háblale a @userinfobot)
 """
+import os
 import threading
 import urllib.parse
 import urllib.request
@@ -22,6 +26,7 @@ import urllib.request
 import MetaTrader5 as mt5
 
 from .logger_config import logger
+import config as _cfg
 from config import (
     USE_TELEGRAM, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PREFIX, SYMBOL,
 )
@@ -78,6 +83,22 @@ def notify(text: str, block: bool = False) -> None:
         threading.Thread(target=_send, args=(msg,), daemon=True).start()
 
 
+def play_trade_sound(wav: str) -> None:
+    """Reproduce un sonido de MT5 (carpeta Sounds del terminal) sin bloquear. Nunca frena el trading."""
+    if not getattr(_cfg, "TRADE_SOUND", True):
+        return
+    try:
+        import winsound
+        info = mt5.terminal_info()
+        path = os.path.join(info.path, "Sounds", wav) if info else ""
+        if os.path.isfile(path):
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        else:
+            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+    except Exception as e:
+        logger.debug(f"No se pudo reproducir {wav}: {e}")
+
+
 def notify_connection_lost() -> None:
     """Avisa UNA sola vez que se perdió la conexión (se rearma al recuperarla)."""
     global _conn_alerted
@@ -114,9 +135,6 @@ def check_closed_positions(open_positions) -> None:
     (get_open_positions(), ya filtrada por MAGIC_NUMBER).
     """
     global _seen
-    if not _enabled:
-        return
-
     current = {
         p.ticket: ("BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL", p.volume, p.price_open)
         for p in (open_positions or [])
@@ -128,6 +146,9 @@ def check_closed_positions(open_positions) -> None:
 
     for ticket, (direction, _vol, _entry) in _seen.items():
         if ticket not in current:   # el ticket desapareció → se cerró
+            play_trade_sound("alert2.wav")
+            if not _enabled:
+                continue
             pnl     = _realized_pnl(ticket)
             win     = pnl is None or pnl >= 0
             emoji   = "✅" if win else "🔴"

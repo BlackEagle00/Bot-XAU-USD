@@ -1,5 +1,5 @@
 """
-Trabajador del panel web: un proceso por PERFIL de clase (forex_swing, metals_scalping, …).
+Trabajador del panel web: un proceso por PERFIL (xauusd_swing, xauusd_scalping, xauusd_grid).
 
 Lo lanza dashboard/server.py. Habla por líneas JSON:
   stdin  ← {"type": "trade", "id": 1, "symbol": "XAUUSD", "action": "BUY"}
@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-PROFILE = sys.argv[1] if len(sys.argv) > 1 else "forex_swing"
+PROFILE = sys.argv[1] if len(sys.argv) > 1 else "xauusd_scalping"
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 if PROFILE.startswith("_") or not (HERE / "profiles" / PROFILE / "config.py").exists():
@@ -28,6 +28,7 @@ os.chdir(HERE)                  # el log del perfil (dashboard_<modo>.log) queda
 import MetaTrader5 as mt5       # noqa: E402
 import config                   # noqa: E402  (perfil de la clase)
 MODE = config.MODE
+GRID = MODE == "grid"           # perfil xauusd_grid: la orden abre una cesta (bot_engine/grid.py)
 from bot_engine.connection import connect                                   # noqa: E402
 from bot_engine.data_handler import fetch_ohlcv, get_account_info, get_tick  # noqa: E402
 from bot_engine.indicators import calculate_all                             # noqa: E402
@@ -37,8 +38,8 @@ from bot_engine.core import _detect_trend_simple                            # no
 from bot_engine.news_filter import in_news_blackout                         # noqa: E402
 from bot_engine.risk_manager import (                                       # noqa: E402
     calculate_sl_tp, check_risk_reward, calculate_lot, lot_plan, can_open_trade, _tick_value, lot_risk_pct,
-    capital_tier, spread_ok)
-from bot_engine import ml_filter                                            # noqa: E402
+    capital_tier, spread_ok, fit_sl_to_capital, over_min_lot_cap)
+from bot_engine import ml_filter, grid                                      # noqa: E402
 from bot_engine.trade_manager import open_trade, is_too_close_to_existing   # noqa: E402
 
 REFRESH_SECS   = 10
@@ -122,11 +123,31 @@ def analyze(sym: str, now: int) -> dict:
         sl, tp = calculate_sl_tp(bias, px, atr, info, ml and ml["sl_mult"], ml and ml["tp_mult"])
         acc = get_account_info()
         lot, need = lot_plan(acc, info, abs(px - sl)) if acc else (0.0, None)
-        plan = {"entry": px, "sl": sl, "tp": tp, "lot": lot,
+        fitted = False
+        if acc and over_min_lot_cap(acc, info, abs(px - sl)):   # cuenta pequeña: SL/TP más cercanos, mismo R:R
+            fit = fit_sl_to_capital(bias, px, sl, tp, acc, info, atr)
+            if fit and spread_ok(tick.ask - tick.bid, abs(px - fit[0])):
+                (sl, tp), fitted = fit, True
+                lot, need = lot_plan(acc, info, abs(px - sl))
+        plan = {"entry": px, "sl": sl, "tp": tp, "lot": lot, "fitted": fitted,
+                "cap_pct": round(getattr(config, "MAX_RISK_MIN_LOT", 0.05) * 100),
                 "capital_needed": round(need, 2) if need is not None else None,
                 "risk_usd": round(abs(px - sl) / info.trade_tick_size * _tick_value(info) * lot, 2),
                 "risk_pct": round(lot_risk_pct(acc, info, abs(px - sl), lot) * 100, 2) if acc and lot else None,
                 "elevated": bool(acc and lot and lot_risk_pct(acc, info, abs(px - sl), lot) > config.RISK_PER_TRADE + 1e-9)}
+
+    grid_view = None
+    if GRID:
+        acc = get_account_info()
+        gatr = grid.exec_atr(atr, sym)                             # el grid opera con el ATR de GRID_EXEC_TF
+        grid_view = {"basket": grid.basket_status(sym, info), "atr": gatr}
+        if bias != "NEUTRAL" and gatr and has_quote and acc:
+            gp = grid.plan(bias, tick, gatr, info, min(acc.balance, acc.equity))
+            grid_view.update(gp)
+            lv0 = gp["levels"][0] if gp["levels"] else None
+            plan = ({"entry": lv0["price"], "sl": gp["sl"], "tp": lv0["tp"], "lot": lv0["lot"], "capital_needed": gp["capital_needed"],
+                     "risk_usd": round(gp["risk_usd"], 2), "risk_pct": gp["risk_pct"], "elevated": gp["elevated"]}
+                    if lv0 else {"lot": 0, "capital_needed": gp["capital_needed"], "cap_pct": gp["cap_pct"]})
 
     res = {
         "symbol": sym, "available": True, "name": info.description, "digits": info.digits,
@@ -139,17 +160,19 @@ def analyze(sym: str, now: int) -> dict:
         "patterns": {"bullish": pats.get("bullish", []), "bearish": pats.get("bearish", [])},
         "rsi": round(ip["rsi"], 1) if ip.get("rsi") is not None else None,
         "adx": round(ip["adx"], 1) if ip.get("adx") is not None else None,
-        "plan": plan, "ml": ml, "updated": now,
+        "plan": plan, "ml": ml, "grid": grid_view, "updated": now,
     }
     _last[sym] = res
     return res
 
 
 def analyze_all() -> dict:
-    ticks = [mt5.symbol_info_tick(s) for s in ("EURUSD", "XAUUSD")]
+    ticks = [mt5.symbol_info_tick(s) for s in ("XAUUSD",)]
     now = max([int(t.time) for t in ticks if t] or [int(time.time())])   # hora del servidor
     cards = {}
     for sym in SYMBOLS:
+        if GRID and mt5.symbol_info(sym):
+            grid.manage_basket(mt5.symbol_info(sym), sym)      # TP/stop/tiempo de las cestas del panel
         _serve_pending()                                # un clic no espera al análisis completo
         try:
             cards[sym] = analyze(sym, now)
@@ -180,6 +203,8 @@ def trade(sym: str, action: str) -> dict:
         return {"ok": False, "reason": "Aún no hay análisis de este activo."}
     if not a["open"]:
         return {"ok": False, "reason": "El mercado de este activo está cerrado."}
+    if GRID:
+        return _grid_trade(sym, action, a)
     blocked, ev = in_news_blackout()
     if blocked:
         return {"ok": False, "reason": f"Noticia de alto impacto: {ev}"}
@@ -206,6 +231,11 @@ def trade(sym: str, action: str) -> dict:
     if not spread_ok(tick.ask - tick.bid, dist):
         return {"ok": False, "reason": "El spread es demasiado alto frente al stop (más del 25%)."}
     acc = get_account_info()
+    if acc and over_min_lot_cap(acc, info, dist):           # cuenta pequeña: SL/TP más cercanos, mismo R:R
+        fit = fit_sl_to_capital(action, px, sl, tp, acc, info, atr)
+        if fit and spread_ok(tick.ask - tick.bid, abs(px - fit[0])):
+            sl, tp = fit
+            dist = abs(px - sl)
     lot = calculate_lot(acc, info, dist) if acc else 0.0
     if lot <= 0:
         need = lot_plan(acc, info, dist)[1] if acc else None
@@ -220,6 +250,24 @@ def trade(sym: str, action: str) -> dict:
             "price": round(px, info.digits), "sl": sl, "tp": tp,
             "risk_usd": round(dist / info.trade_tick_size * _tick_value(info) * lot, 2),
             "risk_pct": round(lot_risk_pct(acc, info, dist, lot) * 100, 2)}
+
+
+def _grid_trade(sym: str, action: str, a: dict) -> dict:
+    """Abre una cesta del grid con las compuertas del motor (noticias, riesgo, spread)."""
+    info, tick = mt5.symbol_info(sym), get_tick(sym)
+    if info is None or tick is None:
+        return {"ok": False, "reason": "Sin precio en este momento."}
+    gatr = (a.get("grid") or {}).get("atr")
+    if not gatr:
+        return {"ok": False, "reason": "Sin ATR del TF de ejecución del grid."}
+    r = grid.try_open_basket(action, tick, gatr, info, sym)
+    if not r["ok"]:
+        return r
+    lv0, acc = r["levels"][0], get_account_info()
+    return {"ok": True, "ticket": r["ticket"], "symbol": sym, "action": action, "lot": lv0["lot"],
+            "price": lv0["price"], "sl": r["sl"], "tp": lv0["tp"], "levels": len(r["levels"]),
+            "risk_usd": round(r["risk_usd"], 2),
+            "risk_pct": round(r["risk_usd"] / min(acc.balance, acc.equity) * 100, 2) if acc else None}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

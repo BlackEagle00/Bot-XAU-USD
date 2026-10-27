@@ -3,7 +3,8 @@
 ║       XAU/USD (Oro) Scalping Bot — Configuración Central     ║
 ╚══════════════════════════════════════════════════════════════╝
 Edita este archivo antes de ejecutar el bot.
-Modo: Scalping (M5/M15/H1) — operaciones de minutos a 1-2 horas.
+Modo: Scalping (M15/H1/H4) — operaciones de minutos a pocas horas (mediana 75 min).
+Calibración walk-forward M5/M15 (2026-10-23): ninguna combinación mejoró la actual fuera de muestra.
 
 ⚠ REALIDAD DEL ORO EN SCALPING:
   El oro tiene un spread estructuralmente ALTO (~$0.30-0.60 en XM). En scalping,
@@ -30,7 +31,7 @@ SYMBOL       = "XAUUSD"      # Puede variar por broker: GOLD, XAUUSD, XAUUSDm.
 MAGIC_NUMBER = 20260621    # ID único — distinto a Oro swing (…618) y a los EUR/USD (…619/620)
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
-PRIMARY_TF   = mt5.TIMEFRAME_M15    # TF principal (M15). Backtest: M5 PF 0.97 (−76%), M15 PF 1.04
+PRIMARY_TF   = mt5.TIMEFRAME_M15    # TF principal (M15). Suite 2026-10-23: M1 y M5 pierden; M15 PF 1.07 (1 000 USD)
 TREND_TF     = mt5.TIMEFRAME_H1     # TF de confirmación de tendencia (H1)
 HIGHER_TF    = mt5.TIMEFRAME_H4     # Contexto de tendencia mayor (H4) — sesgo top-down
 TF_LABELS    = "M15/H1/H4"         # Etiqueta legible para logs
@@ -52,7 +53,7 @@ ATR_PERIOD   = 14
 BB_PERIOD    = 20
 BB_STD       = 2.0
 VWAP_PERIOD  = 96          # 96 velas M15 = VWAP rodante de 24 horas
-SR_LOOKBACK  = 14          # Lookback más corto para pivots S/R locales en M5
+SR_LOOKBACK  = 14          # Lookback más corto para pivots S/R locales en M15
 SR_LEVELS    = 5           # Menos niveles, más cercanos al precio (scalping)
 SR_24H_CANDLES = 96        # 96 velas M15 = 24h (rango del día en indicators.py)
 
@@ -61,7 +62,7 @@ RISK_PER_TRADE      = 0.01     # 1% del balance por operación
 MAX_OPEN_TRADES     = 3        # Con REQUIRE_TREND_ALIGNMENT todas van en la misma dirección
 MAX_DAILY_LOSS_PCT  = 0.1     # 10% pérdida diaria → detener
 # ── SL/TP realistas para scalping de ORO ──────────────────────────────────────
-# El ATR de M5 en oro es pequeño ($1-4). SL ajustado, pero TP con R:R sólido (2:1)
+# El ATR de M15 en oro hoy ≈ $9. SL ajustado, pero TP con R:R sólido (2:1)
 # para que el spread del oro no destruya la estadística (a diferencia de EUR/USD,
 # donde el TP puede ser más corto porque el spread es ínfimo).
 SL_ATR_MULT         = 1.5      # SL = 1.5×ATR (≈ $1.5-6 según volatilidad)
@@ -99,22 +100,22 @@ TRAIL_LOCK_FULL_ATR   = 2.7     # Llega al MAX cuando el profit alcanza 2.7×ATR
                                 # ¿Asegurar aún más rápido? Baja START y/o sube PCT_MIN.
 
 # ─── SEÑALES ───────────────────────────────────────────────────────────────────
-MIN_SIGNAL_SCORE    = 5.5      # Umbral algo más alto: M5 genera más ruido, hay que filtrar más
-ATR_VOLATILITY_MIN  = 0.8      # ATR M5 de oro ≈ $1-4; filtra mercado plano. Si NUNCA opera, bájalo;
+MIN_SIGNAL_SCORE    = 5.5      # Umbral algo más alto: el intradía genera más ruido, hay que filtrar más
+ATR_VOLATILITY_MIN  = 0.8      # ATR M15 de oro ≈ $3-10; filtra mercado plano. Si NUNCA opera, bájalo;
                                # si entra en mercados muertos/laterales, súbelo (revisa el .log).
-REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia M5 (anti-contratendencia)
+REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia M15 (anti-contratendencia)
 REQUIRE_MACRO_ALIGNMENT = False # En scalping NO vetamos por H1 (mataría demasiadas entradas).
                                 # El H1 entra solo como SESGO suave del score (macro_tf), no como veto.
                                 # Pon True si quieres que el H1 fuerte bloquee scalps en su contra.
 # Anti-agotamiento: no abrir NUEVAS entradas en extremos de RSI (vender el suelo /
 # comprar el techo), donde el movimiento suele agotarse y revertir.
-RSI_NO_SELL_BELOW   = 30      # No abrir SELL si el RSI M5 ≤ 30 (sobrevendido → posible suelo)
-RSI_NO_BUY_ABOVE    = 70      # No abrir BUY  si el RSI M5 ≥ 70 (sobrecomprado → posible techo)
+RSI_NO_SELL_BELOW   = 30      # No abrir SELL si el RSI M15 ≤ 30 (sobrevendido → posible suelo)
+RSI_NO_BUY_ABOVE    = 70      # No abrir BUY  si el RSI M15 ≥ 70 (sobrecomprado → posible techo)
 SCORE_WEIGHTS = {
     "ema":      1.3,    # ↑ Alineación EMA sigue siendo lo más importante
-    "rsi":      1.0,    # ↑ RSI en M5 es clave para timing de entrada
+    "rsi":      1.0,    # ↑ RSI en M15 es clave para timing de entrada
     "macd":     1.1,    # ↑ Cruces MACD confiables como confirmación de momentum
-    "patterns": 0.8,    # ↑ Patrones de vela en M5 (más ruidosos, pero útiles)
+    "patterns": 0.8,    # ↑ Patrones de vela en M15 (más ruidosos, pero útiles)
     "bb":       0.7,    # ↑ Squeeze indica volatilidad baja
     "sr":       0.9,    # = Soportes/Resistencias fundamentales
     "vwap":     0.3,    # ↑ Más relevante en scalping (precio justo intradía)
@@ -129,7 +130,7 @@ SCORE_WEIGHTS = {
 # En mercado lateral (ADX bajo) los cruces son ruido; si ADX < umbral, no abrir.
 USE_ADX_FILTER  = True
 ADX_PERIOD      = 14
-ADX_MIN_TREND   = 18      # scalping M5 es más ruidoso → umbral algo más bajo que swing.
+ADX_MIN_TREND   = 18      # 15 probado 2026-10-26 (auditoría 8.4): +17 % operaciones pero OOS PF 1.12 → 1.06 y 1 000 USD +249 % → +157 %; revertido a pedido del usuario
 
 # ─── ORDER-FLOW — PRESIÓN COMPRADORA/VENDEDORA POR TICKS ────────────────────────
 # Proxy del "volumen de compra vs venta" con ticks recientes (en CFDs no hay volumen
@@ -141,9 +142,8 @@ ORDERFLOW_MIN_TICKS     = 50
 # ─── INTER-MERCADO — ÍNDICE DÓLAR (DXY) ─────────────────────────────────────────
 # El oro es INVERSO al dólar. ⚠ Verifica el símbolo del índice dólar en tu broker;
 #    XM suele usar "USDX". Si no existe, el factor se desactiva solo (sin error).
-USE_INTERMARKET     = True
-INTERMARKET_SYMBOL  = "USDX-SEP26"  # Índice dólar (XM, futuro trimestral). Vence ~2026-09-11 → al
-                                    # rolar, cambia el sufijo al siguiente contrato (p.ej. USDX-DEC26).
+USE_INTERMARKET     = False         # Apagado: "USDX-SEP26" venció y ya era un no-op en vivo; el backtest no
+INTERMARKET_SYMBOL  = "USDX"        # lo simula. Este bróker lista "USDX": encenderlo exige medirlo antes.
 INTERMARKET_INVERSE = True
 INTERMARKET_TF      = mt5.TIMEFRAME_H1   # TF del DXY (scalping: H1)
 INTERMARKET_CANDLES = 200
@@ -178,9 +178,13 @@ CANDLES_TREND    = 500    # 500 velas H1 ≈ 20 días
 CANDLES_HIGHER   = 500    # 500 velas H4 ≈ 3 meses de contexto
 
 # ─── BOT ───────────────────────────────────────────────────────────────────────
-LOOP_INTERVAL    = 15           # 15s entre ciclos: reaccionar rápido dentro de la vela M5
+LOOP_INTERVAL    = 15           # 15s entre ciclos: reaccionar rápido dentro de la vela M15
+LATE_ENTRY_SCORE = 8.25         # pedido del usuario 2026-10-26: señal muy fuerte (1.5× el mínimo de 5.5) entra aunque la vela ya arrancó (sin backtest)
+ENTRY_WINDOW_MIN = 5            # entrar solo en los 5 min tras el cierre de la vela M15 de la señal, 1 vez por vela (= backtest)
+MAX_HOLD_MINUTES = 120          # cerrar a los 120 min sin TP ni SL (como el tiempo máximo de las cestas del grid). Barrido _short 2026-10-26: IS PF 1.00 → 1.01, OOS 1.11 → 1.12, 1 000 USD +220 % → +249 %; 30 y 60 min empeoran
+DAILY_LOSS_ALERT_ONLY = True    # pedido del usuario 2026-10-26: al 80 % y al 100 % del límite diario AVISA (log + Telegram) y sigue operando; decide el usuario. Backtest: igual desde 500 USD, peor con 50-100 (PF 0.50 → 0.38)
 MAX_SLIPPAGE     = 15            # Menor tolerancia: en scalping el slippage pesa más sobre el TP
-MAX_SPREAD_POINTS = 80          # Spread máx (en puntos). El oro en XM ≈ 50-70 normal; antes el swing
+MAX_SPREAD_POINTS = 40          # backtest con spread REAL (ticks, auditoría 8.5): 40 > 20 (20 quiebra in-sample; 40 OOS PF 1.15, 1 000 USD +86 %). Bróker ~36 pts de mediana, 43-58 de madrugada
                                 # necesitó 80 para operar. 70 es algo más exigente (protege el TP corto)
                                 # sin bloquear todo. Si NUNCA opera, súbelo; si quieres entradas más
                                 # baratas, bájalo (pero el oro rara vez baja de ~50).
@@ -197,3 +201,21 @@ SR_CLUSTER_ATR_MULT  = 0.30   # tolerancia de agrupación = 0.30×ATR
 SR_TOLERANCE_FLOOR   = 0.5    # piso en $ (solo Oro) → max(atr*0.30, 0.5)
 PSYCH_LEVEL_STEP     = 5.0    # niveles psicológicos cada $5
 PSYCH_LEVEL_COUNT    = 5      # nº de niveles psicológicos a cada lado del precio
+
+# ─── CUENTAS PEQUEÑAS ───────────────────────────────────────────────────────────
+# Medido en backtesting/reports/xau_suite.md (2026-10-23, M15, 3 años): con 50–100 USD el scalping de oro
+# PIERDE con cualquier ajuste. Hoy el lote mínimo (0.01) con SL de 1.5×ATR M15 arriesga ≈ 10 USD.
+#   · Acercar el SL (MICRO_SL_FIT) lo mete en el ruido: 50 USD → PF 0.63 (−84 %). Apagado.
+#   · El tope del lote mínimo lo pidió el usuario para operar con < 300 USD (apalancamiento 1:500: el margen
+#     de 0.01 lote es ≈ 8 USD, pero la pérdida en el stop no cambia con el apalancamiento).
+MICRO_SL_FIT      = False
+MICRO_MIN_SL_ATR  = 0.5
+MAX_RISK_MIN_LOT  = 0.15
+ENFORCE_CAPITAL_LEVEL = False   # 2026-10-26, pedido del usuario: nivel de cuenta solo informa; con poco capital opera al lote
+                                # mínimo marcado "riesgo elevado" (hoy ≈ 14 USD de stop). El grid lo hereda.
+MAX_DD_PCT        = 0.50
+# ↑ Elegidos con backtesting/small_account.py (2026-10-23, último año, arranques de 90 días; regla fijada antes):
+#   stop de 0.01 lote ≈ 10 USD hoy. Tope 15 % + corte total −50 %: ninguna cuenta quemada; con 50 USD opera
+#   en 65 % de los arranques (mediana 0 %), con 100 USD −8 %, con 300 USD −14 %. Gana con riesgo normal (≥ 1 000 USD).
+#   Re-medido 2026-10-25 (3 años, M15): 1 000 USD PF 1.08 (IS 1.01 → OOS 1.11), +248 %, DD 36 %; MC p95 DD 68 %.
+#   50 USD: PF 0.42 y corte −50 % en 2023 → no apto con < ~1 000 USD; M5 pierde (OOS 0.85).

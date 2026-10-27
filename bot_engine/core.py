@@ -39,7 +39,7 @@ from .connection import connect, disconnect, is_market_open
 from .data_handler import (
     get_market_data, get_tick, get_account_info,
     get_symbol_info, get_open_positions,
-    get_orderflow_delta, get_intermarket_bias,
+    get_orderflow_delta, get_intermarket_bias, server_now,
 )
 from .indicators import calculate_all
 from .patterns import analyze_patterns
@@ -47,9 +47,10 @@ from .signals import generate_signal
 from .news_filter import in_news_blackout
 from .risk_manager import (
     calculate_lot, lot_plan, calculate_sl_tp, check_risk_reward,
-    can_open_trade, get_total_daily_pnl, capital_tier, spread_ok,
+    can_open_trade, get_total_daily_pnl, capital_tier, spread_ok, fit_sl_to_capital, over_min_lot_cap,
 )
-from . import ml_filter
+from . import ml_filter, grid
+import config as _cfg
 from .trade_manager import (
     open_trade, close_all_trades,
     manage_open_trades, is_too_close_to_existing
@@ -66,6 +67,12 @@ _cycle_num    = 0       # Contador de ciclos ejecutados
 _trades_today = 0       # Trades abiertos en la sesión actual
 _symbol_info  = None    # Cache de mt5.SymbolInfo (se carga una vez al inicio)
 _last_balance = None    # Balance del último chequeo de lote dinámico
+USE_GRID      = getattr(_cfg, "USE_GRID", False)   # bot grid + cesta (bot_engine/grid.py)
+GRID_EXEC_TF  = getattr(_cfg, "GRID_EXEC_TF", None) # "M1"/"M5": el grid analiza en PRIMARY_TF y opera con este ATR
+_last_basket_bar = None                             # vela de análisis de la última cesta (1 cesta por vela)
+GRID_ONE_PER_BAR = getattr(_cfg, "GRID_ONE_PER_BAR", True)   # False: varias cestas por vela (las separa grid.extra_basket_block)
+_last_trade_bar  = None                             # vela de señal de la última entrada (1 por vela, como el backtest)
+ENTRY_WINDOW_MIN = getattr(_cfg, "ENTRY_WINDOW_MIN", None)   # min tras el cierre de la vela en que se puede entrar (None = sin límite)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -137,7 +144,7 @@ def _run_cycle():
     Ejecuta un ciclo completo de análisis y ejecución.
     Toda la lógica de trading vive aquí.
     """
-    global _cycle_num, _trades_today, _last_balance
+    global _cycle_num, _trades_today, _last_balance, _last_trade_bar
 
     _cycle_num += 1
 
@@ -177,13 +184,17 @@ def _run_cycle():
     #      (break-even y trailing corren en cada ciclo, aunque el spread esté
     #       alto o el mercado plano: esos filtros solo frenan entradas NUEVAS)
     atr = ind_primary.get("atr")
+    gatr = None
+    if USE_GRID:
+        grid.manage_basket(_symbol_info)               # TP/stop/tiempo de la cesta + re-armar niveles
+        gatr = grid.exec_atr(atr)
     if atr is not None:
         manage_open_trades(atr, _symbol_info)
         # Lote dinámico: re-evaluar con el saldo cuando cambia el balance y cada 20 ciclos
         acc = get_account_info()
-        if acc and (acc.balance != _last_balance or _cycle_num % 20 == 0):
+        if acc and (acc.balance != _last_balance or _cycle_num % 20 == 0) and (gatr or not USE_GRID):
             _last_balance = acc.balance
-            _log_lot_capacity(acc, tick, atr)
+            _log_lot_capacity(acc, tick, gatr or atr)
 
     # Avisar por Telegram las posiciones que se cerraron (SL/TP/manual) desde el ciclo previo
     check_closed_positions(get_open_positions())
@@ -207,20 +218,92 @@ def _run_cycle():
                               ind_higher, orderflow=of_delta, intermarket=im_bias)
 
     # ── 9. Intentar abrir un nuevo trade si hay señal válida ──────────────────
-    if signal["action"] in ("BUY", "SELL"):
-        bundle = ml_filter.bundle_for(SYMBOL)      # None si el filtro predictivo está apagado
+    if USE_GRID and signal["action"] in ("BUY", "SELL") and gatr:
+        _try_open_basket(signal["action"], tick, data["primary"].index[-1].timestamp(), gatr, signal["score"])
+    elif signal["action"] in ("BUY", "SELL") and _entry_bar_ok(data["primary"].index[-1].timestamp(), signal.get("score", 0.0)):
+        bundle = _ml_bundle()                      # None si el filtro predictivo está apagado
         feats = ml_filter.features(1 if signal["action"] == "BUY" else -1, price, ind_primary,
                                    ind_trend, ind_higher, signal, tick.ask - tick.bid,
                                    tick.time) if bundle else None
-        _try_open_trade(signal, price, tick, atr, (bundle, feats))
+        if _try_open_trade(signal, price, tick, atr, (bundle, feats)):
+            _last_trade_bar = data["primary"].index[-1].timestamp()
 
     # ── 10. Resumen periódico ─────────────────────────────────────────────────
     if _cycle_num % 20 == 0:
         _print_status()
 
 
+def _tf_minutes(tf) -> int:
+    """Minutos de un TF de MT5 ("M5" o la constante: M1..M30 = minutos; H1..D1 = 0x4000 | horas)."""
+    if isinstance(tf, str):
+        return int(tf[1:]) * (60 if tf[0] == "H" else 1)
+    return tf if tf < 0x4000 else (tf & 0x3FFF) * 60
+
+
+def _ml_bundle():
+    """Filtro predictivo activo, salvo con capital ≥ ML_FILTER_MAX_CAPITAL (swing: desde 500 USD rinde más sin él)."""
+    bundle = ml_filter.bundle_for(SYMBOL)
+    cap = getattr(_cfg, "ML_FILTER_MAX_CAPITAL", None)
+    acc = get_account_info() if bundle and cap else None
+    return None if acc and min(acc.balance, acc.equity) >= cap else bundle
+
+
+def _entry_bar_ok(bar_open: float, score: float = 0.0) -> bool:
+    """
+    Una entrada por vela de señal, y solo en los primeros ENTRY_WINDOW_MIN minutos tras su cierre: el
+    backtest entra en la apertura siguiente a la señal. Sin esto, tras un SL la misma señal reabría en la
+    misma vela (lo que quemó al grid M1 el 2026-10-26) y una señal tardía entraba a mitad de vela.
+    Pedido del usuario 2026-10-26: con ENTRY_RETRY_MIN la ventana se repite cada N min (swing: cada vela
+    H1 dentro de la H4) y con |score| ≥ LATE_ENTRY_SCORE entra aunque la vela ya haya arrancado.
+    """
+    if bar_open == _last_trade_bar:
+        return False
+    if ENTRY_WINDOW_MIN is None or abs(score) >= getattr(_cfg, "LATE_ENTRY_SCORE", float("inf")):
+        return True
+    now = server_now()
+    if now is None:
+        return False
+    since = now.timestamp() - (bar_open + _tf_minutes(_cfg.PRIMARY_TF) * 60)
+    every = getattr(_cfg, "ENTRY_RETRY_MIN", None)
+    return since >= 0 and (since % (every * 60) if every else since) < ENTRY_WINDOW_MIN * 60
+
+
+def _try_open_basket(action: str, tick, bar_open: float, atr: float, score: float = None):
+    """
+    Una cesta por vela de análisis, y solo durante la primera vela de ejecución tras su cierre: es lo que
+    simula el backtest (simulate_grid entra en la apertura siguiente a la señal). Sin esto, una señal H1
+    seguía "viva" toda la hora y cada cesta cerrada en TP abría otra con la misma señal.
+    """
+    global _last_basket_bar
+    now = server_now()
+    bar_close = bar_open + _tf_minutes(_cfg.PRIMARY_TF) * 60
+    window = _tf_minutes(GRID_EXEC_TF or _cfg.PRIMARY_TF) * 60
+    if now is None or not 0 <= now.timestamp() - bar_close < window:
+        return
+    # Varias por vela solo como EXTRA de una cesta abierta: si la anterior ya cerró, no se reabre con la misma
+    # señal (2026-10-26 14:31–14:37: 10 cestas en 6 min reabriendo tras cada SL, −15 USD)
+    if bar_open == _last_basket_bar and (GRID_ONE_PER_BAR or not grid.baskets(symbol_info=_symbol_info)):
+        return
+    res = grid.try_open_basket(action, tick, atr, _symbol_info, score=score)
+    if res["ok"]:
+        _last_basket_bar = bar_open
+    else:
+        logger.debug(f"🧺 Cesta {action} no abierta: {res['reason']}")
+
+
 def _log_lot_capacity(acc, tick, atr: float):
     """Qué lote permite el capital de hoy con el SL actual y cuánto falta para subirlo."""
+    if USE_GRID:                                       # el grid se dimensiona por cesta, no por trade
+        capital = min(acc.balance, acc.equity)
+        g = grid.plan("BUY", tick, atr, _symbol_info, capital)
+        if g["levels"]:
+            logger.info(f"💰 Capital {capital:,.2f} · cesta de {len(g['levels'])} nivel(es), lote "
+                        f"{g['levels'][0]['lot']} · riesgo {g['risk_usd']:.2f} ({g['risk_pct']}%) · TP cesta {g['tp_usd']:.2f}"
+                        + (f" · RIESGO ELEVADO (recomendado ≥ {g['capital_needed']:,.2f})" if g["elevated"] else ""))
+        else:
+            logger.info(f"💰 Capital {capital:,.2f} · ni una cesta de 1 nivel con el lote mínimo cabe en el "
+                        f"{g['cap_pct']:.0f}%: necesitas ≥ {g['capital_needed']:,.2f}")
+        return
     sl, _ = calculate_sl_tp("BUY", tick.ask, atr, _symbol_info)
     sl_dist = tick.ask - sl
     lot, need = lot_plan(acc, _symbol_info, sl_dist)
@@ -299,6 +382,16 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float, ml=(None, None
     acc = get_account_info()
     if acc is None:
         return
+    # E2. Cuenta pequeña: si el lote mínimo arriesga más que el tope, SL/TP más cercanos con el mismo R:R (MICRO_SL_FIT)
+    if over_min_lot_cap(acc, _symbol_info, abs(exec_price - sl)):
+        fit = fit_sl_to_capital(action, exec_price, sl, tp, acc, _symbol_info, atr)
+        if fit:
+            if not spread_ok(tick.ask - tick.bid, abs(exec_price - fit[0])):
+                logger.info(f"🚫 Trade {action} descartado: con el SL de cuenta pequeña el spread pesa > 25%")
+                return
+            logger.info(f"🪙 Cuenta pequeña: SL {sl:.2f}→{fit[0]:.2f} y TP {tp:.2f}→{fit[1]:.2f} "
+                        f"para que el lote mínimo quepa en el riesgo máximo")
+            sl, tp = fit
     lot = calculate_lot(acc, _symbol_info, abs(exec_price - sl))
     if lot <= 0:
         return
@@ -327,6 +420,7 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float, ml=(None, None
                         comment=f"s{signal['score']:+.1f}")
     if ticket:
         _trades_today += 1
+    return ticket
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

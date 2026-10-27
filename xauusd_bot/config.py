@@ -2,8 +2,12 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║       XAU/USD Swing Trading Bot — Configuración Central     ║
 ╚══════════════════════════════════════════════════════════════╝
-Edita este archivo antes de ejecutar el bot.
-Modo: Swing Trading (H1/H4/D1) — operaciones de horas a días.
+Modo: Swing real (H4/D1/W1) — operaciones de días. Restaurado 2026-10-25 (auditoría): el bot llevaba
+desde el 2026-10-23 una copia del scalping en H1 (operaciones de horas), que no es swing.
+Capital mínimo: con 0.01 lote cada $1 del oro vale $1, y el SL de 2×ATR H4 (ATR ≈ $32 hoy) cuesta ≈ $64.
+Con menos capital del que permite MAX_RISK_MIN_LOT el bot NO abre y avisa "siguiente lote con capital ≥ X"
+(el apalancamiento 1:500 solo baja el margen —≈ $8 por 0.01 lote—, no lo que se pierde en el stop).
+Para cuentas desde 50 USD están el scalping y el grid.
 """
 import os
 import MetaTrader5 as mt5
@@ -97,17 +101,15 @@ TRAIL_LOCK_FULL_ATR   = 4.0     # El lock alcanza el MAX cuando el profit llega 
 
 # ─── SEÑALES ───────────────────────────────────────────────────────────────────
 MIN_SIGNAL_SCORE    = 5.0      # Umbral optimizado → más operaciones sin sacrificar calidad (+30-40%)
-ATR_VOLATILITY_MIN  = 2.0      # ATR H1 de XAUUSD ≈ $8–25; filtrar mercado plano
-REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia H1 (anti-contratendencia)
-REQUIRE_MACRO_ALIGNMENT = True  # Filtro D1: si el diario marca tendencia FUERTE (EMAs en cascada),
+ATR_VOLATILITY_MIN  = 2.0      # ATR H4 de XAUUSD ≈ $20–40; filtrar mercado plano
+REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia H4 (anti-contratendencia)
+REQUIRE_MACRO_ALIGNMENT = True  # Filtro W1: si el semanal marca tendencia FUERTE (EMAs en cascada),
                                 # no abrir operaciones en su contra (evita trampas de pullback).
-                                # Solo veta contra tendencias macro decididas; en D1 mixto deja
-                                # decidir al H1. Pon False para ignorar el contexto diario.
 # Anti-agotamiento: no abrir NUEVAS entradas en extremos de RSI (donde el movimiento
 # suele agotarse y revertir). Evita "vender en el suelo" / "comprar en el techo" —
 # justo lo que castiga al apilar ventas de tendencia hasta el fondo antes de un rebote.
-RSI_NO_SELL_BELOW   = 32      # No abrir SELL si el RSI H1 ≤ 32 (sobrevendido → posible suelo)
-RSI_NO_BUY_ABOVE    = 68      # No abrir BUY  si el RSI H1 ≥ 68 (sobrecomprado → posible techo)
+RSI_NO_SELL_BELOW   = 32      # No abrir SELL si el RSI H4 ≤ 32 (sobrevendido → posible suelo)
+RSI_NO_BUY_ABOVE    = 68      # No abrir BUY  si el RSI H4 ≥ 68 (sobrecomprado → posible techo)
 SCORE_WEIGHTS = {
     "ema":      1.3,    # ↑ Alineación EMA es lo más importante para swing
     "rsi":      1.0,    # ↑ RSI en H1 es clave para timing de entrada
@@ -142,9 +144,8 @@ ORDERFLOW_MIN_TICKS     = 50      # mínimo de ticks para fiarse del cálculo
 # El oro es INVERSO al dólar: DXY bajando = viento de cola alcista para el oro.
 # ⚠ Verifica el nombre del símbolo del índice dólar en tu broker (Market Watch).
 #    XM suele usar "USDX". Si no existe, el factor se desactiva solo (sin error).
-USE_INTERMARKET     = True
-INTERMARKET_SYMBOL  = "USDX-SEP26"  # Índice dólar (XM, futuro trimestral). Vence ~2026-09-11 → al
-                                    # rolar, cambia el sufijo al siguiente contrato (p.ej. USDX-DEC26).
+USE_INTERMARKET     = False         # Apagado: "USDX-SEP26" venció y ya era un no-op en vivo; el backtest no
+INTERMARKET_SYMBOL  = "USDX"        # lo simula. Este bróker lista "USDX": encenderlo exige medirlo antes.
 INTERMARKET_INVERSE = True              # oro/EUR son inversos al USD
 INTERMARKET_TF      = mt5.TIMEFRAME_H4  # TF para medir la tendencia del DXY (swing)
 INTERMARKET_CANDLES = 200
@@ -181,6 +182,9 @@ CANDLES_HIGHER   = 365    # 365 velas W1 ≈ 7 años de contexto macro
 
 # ─── BOT ───────────────────────────────────────────────────────────────────────
 LOOP_INTERVAL    = 60          # 1 minuto entre ciclos (más reactividad, mejor capturas de entrada)
+ENTRY_WINDOW_MIN = 15           # entrar solo en los 15 min tras el cierre de la vela H4 de la señal, 1 vez por vela (= backtest)
+ENTRY_RETRY_MIN  = 60           # pedido del usuario 2026-10-26: y en los 15 min tras cada cierre H1 mientras la señal H4 siga vigente (sin backtest)
+LATE_ENTRY_SCORE = 7.5          # pedido del usuario: señal muy fuerte (1.5× el mínimo de 5.0) entra aunque la vela ya arrancó (sin backtest)
 MAX_SLIPPAGE     = 30          # Mayor tolerancia al slippage en swing
 MAX_SPREAD_POINTS = 80         # Spread máx permitido (en puntos) para operar. Gold XM ≈ 30-50 normal;
                                # antes estaba fijo en 50 → bloqueaba TODOS los ciclos. Sube si tu broker
@@ -196,10 +200,20 @@ USE_MACRO_CONTEXT    = True
 MACRO_TF_LABEL       = "W1"
 # Ajustes del backtest de 3 años (backtesting/engine_backtest.py, fuera de muestra):
 REQUIRE_MACRO_FOR_SELL = True   # ventas solo con W1 bajista: PF 1.69 → 1.78 (las ventas contra el macro perdían)
-USE_ML_FILTER          = True   # filtro predictivo models/xauusd_bot_H4_XAUUSD.joblib: ~79% acierto, PF 1.21
-                                # (sin filtro gana más: PF 1.78; ponlo en False si prefieres rentabilidad)
+USE_ML_FILTER          = True   # HGB walk-forward 2026-10-25: OOS 1 000 USD PF 1.03 → 1.31, acierto 82 %, DD 24 % (τ 0.675, SL 2.0 / TP 1.5)
+ML_FILTER_MAX_CAPITAL  = 500    # pedido del usuario 2026-10-26: con capital ≥ 500 USD sin filtro ML (backtest _bal: 500 PF 0.97 con ML vs 1.31 sin; 50/100 mejor con ML)
 # S/R parametrizado (reproduce exactamente el comportamiento previo del Oro):
 SR_CLUSTER_ATR_MULT  = 0.30   # tolerancia de agrupación = 0.30×ATR
 SR_TOLERANCE_FLOOR   = 0.5    # piso en $ (solo Oro) → max(atr*0.30, 0.5)
 PSYCH_LEVEL_STEP     = 5.0    # niveles psicológicos cada $5 (2040, 2045, …)
 PSYCH_LEVEL_COUNT    = 5      # nº de niveles psicológicos a cada lado del precio
+
+# ─── CAPITAL MÍNIMO (cuentas pequeñas) ──────────────────────────────────────────
+# Sin ajuste micro: acercar el SL lo mete en el ruido (lo midieron todas las suites). El lote mínimo se
+# permite mientras arriesgue ≤ MAX_RISK_MIN_LOT; si no, el bot no abre e informa el capital necesario.
+MICRO_SL_FIT      = False
+MICRO_MIN_SL_ATR  = 0.5
+MAX_RISK_MIN_LOT  = 0.10
+ENFORCE_CAPITAL_LEVEL = False   # 2026-10-26, pedido del usuario: nivel de cuenta y capital mínimo solo informan (log + panel);
+                                # con poco capital opera al lote mínimo marcado "riesgo elevado". Hoy 0.01 lote ≈ 64 USD de stop.
+MAX_DD_PCT        = 0.30     # equity −30 % desde su máximo → no abre más (corte total)

@@ -28,8 +28,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 An automated trading bot for MetaTrader 5 (Windows only — MT5's Python API requires the MT5 terminal
-running locally). The original bot was the gold one in `xauusd_bot/`; the repo now holds **four bot
-variants that share a single engine** (`bot_engine/`). Each bot folder contains only its own `config.py`
+running locally). **The bots trade XAUUSD only** and so does the web panel (since 2026-10-23 turn 3 the other-asset profiles, `_forex_base/`, `_gold_base/`,
+their calibrations and models were moved to `../_archivo_otros_activos/`). Since the 2026-10-25 audit
+(`backtesting/reports/auditoria_2026-10-25.md`) `xauusd_bot/config.py` is a **real H4/D1/W1 swing** again
+(rebuilt from the archived `_gold_base/swing.py`; it needs ≈ 640 USD at today's ATR and says so instead of
+trading smaller accounts). **Since 2026-10-26 the repo keeps two gold bots** (swing + scalping) that share a single engine (`bot_engine/`): the grid bot
+(`xauusd_grid_bot/`, magic 20260622) and its panel profile were retired to `../_archivo_otros_activos/` (no proven edge: M1 OOS PF < 1,
+live −8 USD on 2026-10-26); `bot_engine/grid.py` and `simulate_grid` stay for tests/backtests.
+Both bots now enter **once per signal bar and only within `ENTRY_WINDOW_MIN` after it closes** (`core._entry_bar_ok`, = backtest's next-bar-open entry). Each bot folder contains only its own `config.py`
 (parameters) and a thin `main.py` launcher — all logic lives once in `bot_engine/`. Each bot has its own
 `MAGIC_NUMBER` and `LOG_FILE`, so they run side-by-side on one account without touching each other's trades:
 
@@ -37,12 +43,10 @@ variants that share a single engine** (`bot_engine/`). Each bot folder contains 
 |---|---|---|---|
 | `xauusd_bot/`          | GOLD   | swing H4/D1/W1     | 20260618 |
 | `xauusd_scalping_bot/` | GOLD   | scalping M15/H1/H4 | 20260621 |
-| `eurusd_bot/`          | EURUSD | swing H1/H4/D1     | 20260619 |
-| `eurusd_scalping_bot/` | EURUSD | scalping M5/M15/H1 | 20260620 |
 
 `run.py` (repo root) is the launcher: `python run.py` for an interactive menu, or
-`python run.py <key>` where key ∈ `oro | oro_scalping | eurusd | eurusd_scalping`. **The engine is shared,
-not copied**: fix or improve it **once** in `bot_engine/` and it applies to all 4 bots. A bot's `main.py`
+`python run.py <key>` where key ∈ `oro | oro_scalping`. **The engine is shared,
+not copied**: fix or improve it **once** in `bot_engine/` and it applies to all bots. A bot's `main.py`
 puts its own folder first on `sys.path`, so the engine's `from config import …` resolves to that bot's
 `config.py`; engine modules import each other relatively (`from .signals import …`). Each bot runs in its
 own process (`run.py` uses subprocess), so configs never collide. Differences between bots are **driven by
@@ -50,9 +54,7 @@ config**, not by divergent code:
 - **Macro context** is one code path in `bot_engine/signals.py`, gated per bot by `USE_MACRO_CONTEXT`:
   gold bots set it `True` (swing consumes D1 with a hard veto `REQUIRE_MACRO_ALIGNMENT=True`; scalp
   consumes H1 as a soft nudge, `REQUIRE_MACRO_ALIGNMENT=False`), and `MACRO_TF_LABEL` ("D1"/"H1") sets the
-  log label. The EURUSD bots set `USE_MACRO_CONTEXT=False` (+ `REQUIRE_MACRO_ALIGNMENT=False`, no
-  `macro_tf` weight) → `core.py` passes `ind_higher=None` and the macro fields don't even appear in their
-  log line.
+  log label. A config with `USE_MACRO_CONTEXT=False` makes `core.py` pass `ind_higher=None` (no macro fields in the log).
 - **S/R scale** is parametrized in `bot_engine/indicators.py` via `SR_CLUSTER_ATR_MULT`,
   `SR_TOLERANCE_FLOOR`, `PSYCH_LEVEL_STEP`, `PSYCH_LEVEL_COUNT` (gold: 0.3 / 0.5 / 5.0 / 5, which reproduces
   the old `max(atr*0.3, 0.5)` + $5 levels; EUR: floor 0.0 + a decimal step).
@@ -70,8 +72,8 @@ config**, not by divergent code:
     a tick-delta proxy).
   - **Inter-market DXY** (`USE_INTERMARKET`; `data_handler.get_intermarket_bias`, scored via
     `SCORE_WEIGHTS["intermarket"]`, `INTERMARKET_INVERSE=True`) — dollar-index bias, inverse for gold/EUR.
-    `INTERMARKET_SYMBOL` is `"USDX-SEP26"` on the XM account (a quarterly **futures** contract — roll the
-    suffix when it expires ~2026-09-11); if the broker lacks the symbol the factor degrades to no-op.
+    **Off in every gold config since 2026-10-25** (`USE_INTERMARKET=False`): `USDX-SEP26` expired and the
+    backtest can't simulate it, so live and backtest now score the same factors. Order-flow is still live-only.
   - **News filter** (`USE_NEWS_FILTER`; engine module **`bot_engine/news_filter.py`**) — blackout gate
     around high-impact calendar events (ForexFactory weekly JSON; fail-open when offline via `NEWS_FAIL_OPEN`).
   - **Telegram notifications** (`USE_TELEGRAM`; engine module **`bot_engine/telegram_notifier.py`**) —
@@ -104,13 +106,12 @@ scikit-learn is imported lazily, so the bots run without it. `REQUIRE_MACRO_FOR_
 default False) vetoes SELLs unless the higher TF trend is down.
 
 `dashboard/` is a local web panel (stdlib only): `python dashboard/server.py` or `python run.py dashboard`
-→ http://127.0.0.1:8765. `server.py` spawns one `worker.py` per **class profile** (6:
-`forex|metals|stocks` × `scalping|swing`, folders `dashboard/profiles/<class>_<mode>/`) that talks JSON lines
+→ http://127.0.0.1:8765. `server.py` spawns one `worker.py` per **profile** (2, XAUUSD only:
+`xauusd_swing` H4, `xauusd_scalping` M15, folders `dashboard/profiles/xauusd_<mode>/`) that talks JSON lines
 over stdin/stdout (the worker redirects `sys.stdout` to stderr so engine logs never corrupt the protocol)
 (it loads every ML model *before* starting its stdin reader thread — on Windows, importing scikit-learn while a thread blocks on `sys.stdin` deadlocks — and drops trade requests older than `TRADE_MAX_AGE`=15 s so an order the server already reported as timed out is never sent).
 Each profile config calls `dashboard/profiles/_base.profile(name, base, tf, sections, **overrides)`, which
-loads a bot config via `runpy` (EURUSD bots for forex, gold bots for metals/stocks), neutralises absolute
-units (`ATR_VOLATILITY_MIN=0`, `PSYCH_LEVEL_COUNT=0`, `SR_TOLERANCE_FLOOR=0`), derives the trend/higher TF
+loads the matching bot config via `runpy` unchanged (same signal as the bot), derives the trend/higher TF
 from the primary TF and sets one shared panel magic (20260630, no trailing) and `SECTIONS`.
 `/api/analysis?mode=` merges the profiles of one mode; `/api/trade` goes to the worker that owns the symbol;
 `/api/news` serves headlines (Google News, CNBC, Investing.com RSS via `parse_rss`, which rejects
@@ -124,7 +125,7 @@ config only if OOS improves, and saves `backtesting/reports/calibration_<profile
 the page shows "Sin ventaja probada" when the live config's OOS PF ≤ 1.
 **Small accounts:** `lot_plan` returns the min lot when it risks ≤ `MAX_RISK_MIN_LOT` (0.05) and flags it as
 elevated risk; `is_daily_loss_exceeded` also blocks on the whole-account day P&L (`ACCOUNT_MAX_DAILY_LOSS_PCT`,
-0.10, all magics + floating). **Models** load only if their SHA-256 is in `models/manifest.json`.
+0.10, all magics + floating). **`ENFORCE_CAPITAL_LEVEL`** (default True; `False` in the gold configs since 2026-10-26 at the user's request) makes the capital tier and the min-lot cap informative only: `capital_tier` keeps its name but no longer limits open trades/daily cut, `lot_plan` returns the min lot flagged elevated, and `grid.build_basket` allows a 1-level min-lot basket; the stop, DD cuts, account daily cut and spread rule still apply. **Models** load only if their SHA-256 is in `models/manifest.json`.
 Docs: `AGENTS.md`, `SECURITY.md`, `docs/ARCHITECTURE.md`, `docs/PRD.md` (roadmap), `docs/adr/`. Engine functions take an optional `symbol=`
 (`get_tick`, `get_symbol_info`, `get_market_data`, `get_open_positions`, `can_open_trade`, `open_trade`,
 `is_too_close_to_existing`) so one process can trade several symbols. POST `/api/trade` requires the
@@ -140,11 +141,30 @@ Repo layout: the shared engine is the package `bot_engine/` (`core.py` is the lo
 `bot_engine.core.run()`. Engine modules use **relative** imports for each other (`from .signals import …`)
 and **absolute** `from config import …` (resolves to the launching bot's config via `sys.path[0]`) — keep
 that split when editing or adding engine modules. Reference docs live in `docs/` (per-instrument guides
-`docs/GUIA_GOLD.md` / `docs/GUIA_EURUSD.md`, broker/migration notes, and `docs/historico/` for dated
+`docs/GUIA_GOLD.md`, broker/migration notes, and `docs/historico/` for dated
 one-off reports); the backtesting toolkit lives in `backtesting/`. Root keeps only `run.py`,
 `requirements.txt`, `.env.example`, `README.md` and this file.
 
-**README.md is current** — it was rewritten alongside this round of features and now documents all 4
+**Grid + basket** (`bot_engine/grid.py`, ADR 0006): only when a config has `USE_GRID=True` (`xauusd_grid_bot`,
+whose config `runpy`-loads the scalping config and overrides grid/risk keys, and the panel profile
+`xauusd_grid`, mode "grid", magic 20260631). `core._run_cycle` calls `grid.manage_basket` every cycle
+(before entry filters) and `grid.try_open_basket` instead of `_try_open_trade`. A basket = level 0 at market
++ `GRID_LEVELS-1` pending LIMIT orders against the move (`trade_manager.place_pending`), each with its own
+short TP (re-armed while the basket lives). **Anti-burn design (2026-10-23 v2):** the basket stop is a real
+broker SL shared by every order, `GRID_STOP_BEYOND_ATR`×ATR beyond the last level; `build_basket` sizes the
+lot so the FULL basket (all levels filled + stop) loses ≤ `GRID_RISK_PCT` of capital, dropping levels when
+capital is small (1 level at min lot allowed up to `GRID_MAX_RISK_MIN_LOT`, else no basket + `min_capital`);
+basket TP = `GRID_BASKET_TP_R`×risk; flat on Friday from `GRID_FRIDAY_CLOSE_HOUR` and no entries in
+`GRID_BLOCK_HOURS` (server time); equity −`GRID_MAX_DD_PCT` from peak → close all and stop (`dd_halt`, peak
+counted from process start). Orders carry `G<id> L<level>` in the comment so a restart still recognizes the
+basket (its risk is rebuilt from lots × distance to SL). Backtest: `engine_backtest.simulate_grid` (bar by
+bar, adverse extreme first, limits and SL in crossing order, a limit filled at a bar's low cannot take TP in
+the same bar, stop-out at equity 0),
+`--sweep` variants, report key `"grid"`; `backtesting/xau_suite.py` runs scalping M5/M15, swing H4 and grid specs `ANALYSIS>EXEC:regime` (e.g. `M5`, `H1>M1`, `M1:range`; short ones sweep 96 variants at 1 000 USD) and
+writes `reports/xau_suite.md` (grid variant chosen on in-sample only). `--end YYYY-MM-DD` replays a fixed
+period (regression check: same period ⇒ identical old metrics). M1 history is ~100k bars (~3 months).
+
+**README.md is current** — it was rewritten alongside this round of features and now documents all
 variants, the scoring/gates, the extra directional factors (ADX / order-flow / DXY / news), and every
 on/off flag. Still trust `config.py` and the module docstrings for the exact live numbers when in doubt;
 the README's per-bot numbers are illustrative snapshots that can drift as tuning changes.
@@ -154,7 +174,7 @@ the README's per-bot numbers are illustrative snapshots that can drift as tuning
 ```bash
 pip install -r xauusd_bot/requirements.txt   # same deps for every variant
 python run.py                # interactive menu to pick a bot
-python run.py oro_scalping   # or launch one directly (oro | oro_scalping | eurusd | eurusd_scalping)
+python run.py oro_scalping   # or launch one directly (oro | oro_scalping)
 # — or run a single variant straight from its folder —
 cd xauusd_bot && python main.py   # MT5 terminal must already be open and logged in
 ```
@@ -219,8 +239,7 @@ Each variant is tuned for its symbol+mode; keep these *intentionally different* 
 The `USE_*` factor flags (`USE_PROGRESSIVE_TRAIL`, `USE_ADX_FILTER`, `USE_ORDERFLOW`,
 `USE_INTERMARKET`, `USE_NEWS_FILTER`, plus `USE_TELEGRAM` for notifications) default to `True`; flip any
 to `False` to disable that factor without touching the rest (`USE_TELEGRAM` also self-disables when its
-`.env` creds are absent). `INTERMARKET_SYMBOL="USDX-SEP26"` (XM quarterly dollar-index future — roll the
-suffix at expiry ~2026-09-11) must exist on the broker or the factor self-disables.
+`.env` creds are absent). `USE_INTERMARKET` is off in the gold configs (the `USDX-SEP26` future expired).
 
 Note: total *correlated* risk ≈ `MAX_OPEN_TRADES × RISK_PER_TRADE` because `REQUIRE_TREND_ALIGNMENT`
 forces every open trade the same direction. Gold swing is therefore at ~5% (5 × 1%). To raise the trade
@@ -234,12 +253,13 @@ user's chosen budget (3% / 4% / 5%) and whether to apply it to the other bots.
 ### Applying a logic change (now: edit the engine once)
 
 With the shared engine there's no more copy/paste across folders — that's the whole point of the refactor.
-1. **Logic change** → edit the relevant module in `bot_engine/` **once**; it applies to all 4 bots.
+1. **Logic change** → edit the relevant module in `bot_engine/` **once**; it applies to all bots.
 2. **Behavior that must differ per bot** → don't fork the code. Add a config key (gate/weight/scale),
    read it in the engine with `from config import …` (or `SCORE_WEIGHTS.get(...)`/`getattr` with a default
    for backward-compat), and set its value in each `config.py`. Existing examples: `USE_MACRO_CONTEXT`,
    `MACRO_TF_LABEL`, `SR_TOLERANCE_FLOOR`, `ORDER_COMMENT_PREFIX`, `BOT_LABEL`. **If you import a new
-   config key unconditionally in the engine, add it to all 4 `config.py` or those bots fail at import.**
+   config key unconditionally in the engine, add it to every bot `config.py` or
+   those fail at import.**
 3. **Tuning** → edit each `config.py` in place (never `cp` — every value is per-bot; see the tuning table).
 4. **Verify**: `python -m py_compile bot_engine/*.py */config.py */main.py`, then a per-bot import smoke
    test in a separate process (replicate the launcher's `sys.path`: bot folder first, then repo root;
@@ -255,11 +275,11 @@ cycle is a strict pipeline through the other modules, and most modules only make
 flow:
 
 1. **`connection.py`** — verify/reconnect to the MT5 terminal, validate the symbol is in Market Watch.
-2. **`data_handler.py`** — pull OHLCV for three timeframes at once: `primary` (`PRIMARY_TF`, currently
-   H1), `trend` (`TREND_TF`, H4), `higher` (`HIGHER_TF`, D1). The most recent (still-forming) candle is
+2. **`data_handler.py`** — pull OHLCV for three timeframes at once: `primary` (`PRIMARY_TF`, e.g.
+   H4 swing / M15 scalping), `trend` (`TREND_TF`), `higher` (`HIGHER_TF`). The most recent (still-forming) candle is
    always dropped to avoid acting on incomplete data. (Both Gold bots consume `higher` as a macro-context
-   filter — D1 in `xauusd_bot/`, H1 in `xauusd_scalping_bot/` — see step 5. The two EURUSD bots still
-   fetch but don't consume it.) It also exposes two optional directional helpers used by all 4 bots:
+   filter — D1 in `xauusd_bot/` (H4 primary), H4 in `xauusd_scalping_bot/` — see step 5. The forex bases still
+   fetch but don't consume it.) It also exposes two optional directional helpers used by all bots:
    `get_orderflow_delta()` (recent-tick buy/sell pressure via `copy_ticks_range`, returns a delta in
    [-1,1] or `None`) and `get_intermarket_bias()` (dollar-index trend via `mt5.symbol_select` +
    `copy_rates_from_pos`; returns `None`/no-op if the broker lacks `INTERMARKET_SYMBOL`).
@@ -275,11 +295,11 @@ flow:
    Thresholded by `MIN_SIGNAL_SCORE` into BUY/SELL/HOLD. Then several gates can downgrade a BUY/SELL to HOLD:
    - **Trend alignment** — if `REQUIRE_TREND_ALIGNMENT` is true (default), a signal against the
      primary-timeframe EMA trend is forced to HOLD; the bot only trades with the trend.
-   - **Anti-exhaustion RSI** (all 4 bots) — a new SELL is blocked when `rsi ≤ RSI_NO_SELL_BELOW` and a
+   - **Anti-exhaustion RSI** (all bots) — a new SELL is blocked when `rsi ≤ RSI_NO_SELL_BELOW` and a
      new BUY when `rsi ≥ RSI_NO_BUY_ABOVE`, so the bot doesn't "sell the bottom / buy the top" at a
      likely reversal. Swing uses 32/68, scalping 30/70. This filter only stops *opening*; it never
      closes existing positions.
-   - **ADX trend-strength** (all 4 bots) — when `USE_ADX_FILTER` and the primary-TF `adx < ADX_MIN_TREND`
+   - **ADX trend-strength** (all bots) — when `USE_ADX_FILTER` and the primary-TF `adx < ADX_MIN_TREND`
      (swing 20, scalping 18), new entries are blocked: the bot is trend-following, so a weak/ranging tape
      (low ADX) is where its cross signals fail. Measures strength only, not direction; never closes.
    - **Macro (Gold bots only)** — `generate_signal()` takes `ind_higher` and `_score_macro()` adds a
@@ -287,7 +307,7 @@ flow:
      trade alone). In `xauusd_bot/` this is D1 (`macro_tf=0.8`) and, when the daily EMAs are in a *strong*
      full cascade with `REQUIRE_MACRO_ALIGNMENT=True`, trades against that daily trend are vetoed to HOLD.
      In `xauusd_scalping_bot/` it's H1 (`macro_tf=0.5`, `REQUIRE_MACRO_ALIGNMENT=False`) — nudge only, no
-     veto. The EURUSD bots have no macro scoring at all.
+     veto. The forex bases have no macro scoring at all.
 6. **`risk_manager.py`** — gates trade entry (`can_open_trade`): daily loss limit (latched: once hit,
    blocked until the next server day), max simultaneous trades (a failed `positions_get` blocks), free
    margin floor. Computes SL/TP from `SL_ATR_MULT`/`TP_ATR_MULT`, then the **dynamic lot** (`lot_plan`)

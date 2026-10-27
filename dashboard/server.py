@@ -38,10 +38,10 @@ from urllib.parse import parse_qs, urlparse
 HOST, PORT = "127.0.0.1", 8765
 HERE  = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(32)
-MODES = ("scalping", "swing")
+MODES = ("scalping", "swing")   # grid retirado el 2026-10-26 (sin ventaja probada; perfil en ../_archivo_otros_activos)
 PROFILES = sorted(d.name for d in (HERE / "profiles").iterdir()
                   if d.is_dir() and not d.name.startswith("_") and (d / "config.py").exists())
-SECTION_ORDER = ("Divisas", "Metales", "Acciones", "Cripto (ETF)")
+SECTION_ORDER = ("Metales",)
 ORDER_COOLDOWN_SECS = 5
 ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 

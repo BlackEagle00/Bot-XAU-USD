@@ -29,8 +29,12 @@ from config import (
 )
 import config as _cfg
 from .data_handler import get_open_positions, get_account_info, server_now
+from .telegram_notifier import notify
 
 _halt_day = None    # día (hora servidor) en que se tocó el límite diario → bloquea hasta el siguiente
+_alerted = set()    # (día, alcance, umbral) ya avisados con DAILY_LOSS_ALERT_ONLY
+_peak = 0.0         # equity máxima vista por este proceso (corte total MAX_DD_PCT)
+_dd_stopped = False # el corte total no se suelta solo: hay que reiniciar el bot
 
 # Niveles por capital: (capital mínimo, nombre, máx. operaciones abiertas, pérdida diaria máx.).
 # None = usar el valor del config. Un config puede definir su propio CAPITAL_TIERS.
@@ -42,6 +46,11 @@ DEFAULT_CAPITAL_TIERS = (
 MAX_SPREAD_SL_FRAC = 0.25   # el spread no puede costar más del 25% de la distancia al SL
 MAX_RISK_MIN_LOT   = 0.05   # cuentas pequeñas: el lote mínimo se permite hasta 5% de riesgo
 ACCOUNT_MAX_DAILY_LOSS_PCT = 0.10   # corte diario de TODA la cuenta (todos los bots y el panel juntos)
+ENFORCE_CAPITAL_LEVEL = True       # False: el nivel de cuenta y el tope del lote mínimo solo informan, no bloquean
+
+
+def _enforce() -> bool:
+    return getattr(_cfg, "ENFORCE_CAPITAL_LEVEL", ENFORCE_CAPITAL_LEVEL)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -55,6 +64,8 @@ def capital_tier(capital: float) -> dict:
     """
     tiers = sorted(getattr(_cfg, "CAPITAL_TIERS", DEFAULT_CAPITAL_TIERS))
     floor, name, max_open, daily = next((t for t in reversed(tiers) if capital >= t[0]), tiers[0])
+    if not _enforce():                                     # nivel informativo: mandan los valores del config
+        max_open = daily = None
     return {
         "name": name, "min_capital": floor,
         "max_open": min(MAX_OPEN_TRADES, max_open) if max_open else MAX_OPEN_TRADES,
@@ -121,7 +132,7 @@ def lot_plan(account, symbol_info, sl_distance: float) -> Tuple[float, float]:
         # siempre que no pase de MAX_RISK_MIN_LOT. need = capital con el que vuelve a caber en el 1%.
         cap = getattr(_cfg, "MAX_RISK_MIN_LOT", MAX_RISK_MIN_LOT)
         min_risk = min_lot * sl_value_per_lot
-        if capital > 0 and min_lot <= max_lot + 1e-9 and min_risk <= capital * cap:
+        if capital > 0 and min_lot <= max_lot + 1e-9 and (min_risk <= capital * cap or not _enforce()):
             return round(min_lot, 8), min_risk / RISK_PER_TRADE
         return 0.0, min_risk / cap                         # capital mínimo para operar este activo
     lot, next_lot = round(lot, 8), (lot + step if step > 0 else None)
@@ -131,12 +142,52 @@ def lot_plan(account, symbol_info, sl_distance: float) -> Tuple[float, float]:
     return lot, next_lot * sl_value_per_lot / RISK_PER_TRADE
 
 
+def micro_sl_distance(capital: float, symbol_info, atr: float):
+    """
+    Cuenta pequeña (MICRO_SL_FIT=True): distancia de SL con la que el lote mínimo arriesga justo
+    MAX_RISK_MIN_LOT del capital. None si está apagado o si quedaría por debajo de MICRO_MIN_SL_ATR×ATR
+    (un stop más corto que eso es ruido puro y no se opera).
+    """
+    if not getattr(_cfg, "MICRO_SL_FIT", False) or capital <= 0 or atr <= 0 or symbol_info.trade_tick_size <= 0:
+        return None
+    cap = getattr(_cfg, "MAX_RISK_MIN_LOT", MAX_RISK_MIN_LOT)
+    per_price = _tick_value(symbol_info) / symbol_info.trade_tick_size     # USD por 1.0 de precio y lote
+    min_lot = max(MIN_LOT, symbol_info.volume_min)
+    dist = capital * cap / (min_lot * per_price) * 0.995                    # margen por el redondeo del precio
+    min_stop = symbol_info.trade_stops_level * symbol_info.point
+    if dist < getattr(_cfg, "MICRO_MIN_SL_ATR", 0.5) * atr or dist <= min_stop:
+        return None
+    return dist
+
+
+def fit_sl_to_capital(action: str, exec_price: float, sl: float, tp: float, account, symbol_info, atr: float):
+    """
+    Si el lote mínimo no cabe con el SL por ATR, acerca SL y TP (mismo R:R) hasta que quepa en
+    MAX_RISK_MIN_LOT. Devuelve (sl, tp) nuevos o None (no hace falta o no se puede).
+    """
+    dist = micro_sl_distance(min(account.balance, account.equity), symbol_info, atr)
+    risk = abs(exec_price - sl)
+    if dist is None or risk <= 0 or dist >= risk:
+        return None
+    d, rr = (1 if action == "BUY" else -1), abs(tp - exec_price) / risk
+    return round(exec_price - d * dist, symbol_info.digits), round(exec_price + d * dist * rr, symbol_info.digits)
+
+
 def lot_risk_pct(account, symbol_info, sl_distance: float, lot: float) -> float:
     """Fracción del capital que pierde `lot` si salta el SL (0.012 = 1.2%)."""
     capital = min(account.balance, account.equity)
     if capital <= 0 or symbol_info.trade_tick_size <= 0:
         return 0.0
     return lot * sl_distance / symbol_info.trade_tick_size * _tick_value(symbol_info) / capital
+
+
+def over_min_lot_cap(account, symbol_info, sl_distance: float) -> bool:
+    """
+    El lote de lot_plan no cabe (0) o, con ENFORCE_CAPITAL_LEVEL=False, el lote mínimo arriesga más que
+    MAX_RISK_MIN_LOT: es cuando MICRO_SL_FIT acerca el SL. Si no se puede, sigue con el SL normal.
+    """
+    lot = lot_plan(account, symbol_info, sl_distance)[0]
+    return lot <= 0 or lot_risk_pct(account, symbol_info, sl_distance, lot) > getattr(_cfg, "MAX_RISK_MIN_LOT", MAX_RISK_MIN_LOT)
 
 
 def calculate_lot(account, symbol_info, sl_distance: float) -> float:
@@ -292,9 +343,12 @@ def is_daily_loss_exceeded() -> bool:
     daily_pnl = get_total_daily_pnl()
     limit = capital_tier(min(acc.balance, getattr(acc, "equity", acc.balance)))["daily_loss"]
 
+    alert_only = getattr(_cfg, "DAILY_LOSS_ALERT_ONLY", False)
     if daily_pnl < 0:
         loss_pct = abs(daily_pnl) / acc.balance
-        if loss_pct >= limit:
+        if alert_only:
+            _daily_loss_alert(today, "del bot", daily_pnl, loss_pct, limit)
+        elif loss_pct >= limit:
             _halt_day = today
             logger.warning(
                 f"⛔ Límite diario alcanzado: P&L hoy = {daily_pnl:.2f} USD "
@@ -306,7 +360,9 @@ def is_daily_loss_exceeded() -> bool:
     # Corte de la cuenta completa: dos bots con 10% cada uno ya no pueden perder 20% el mismo día
     acc_limit = getattr(_cfg, "ACCOUNT_MAX_DAILY_LOSS_PCT", ACCOUNT_MAX_DAILY_LOSS_PCT)
     acc_pnl = get_account_daily_pnl()
-    if acc_pnl < 0 and abs(acc_pnl) / acc.balance >= acc_limit:
+    if acc_pnl < 0 and alert_only:
+        _daily_loss_alert(today, "de la cuenta", acc_pnl, abs(acc_pnl) / acc.balance, acc_limit)
+    elif acc_pnl < 0 and abs(acc_pnl) / acc.balance >= acc_limit:
         _halt_day = today
         logger.warning(
             f"⛔ Límite diario de la CUENTA alcanzado: P&L de todos los bots hoy = {acc_pnl:.2f} USD "
@@ -320,6 +376,23 @@ def is_daily_loss_exceeded() -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 # VALIDACIÓN GLOBAL ANTES DE ABRIR
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def dd_halted(equity: float, peak: float, pct) -> bool:
+    """Corte total: la equity cayó `pct` desde su máximo (pct None o 0 = apagado)."""
+    return bool(pct) and peak > 0 and equity <= peak * (1 - pct)
+
+
+def _daily_loss_alert(today, scope: str, pnl: float, frac: float, limit: float) -> None:
+    """DAILY_LOSS_ALERT_ONLY: avisa al 80 % y al 100 % del límite, una vez por día y umbral; no bloquea (decide el usuario)."""
+    for level in (0.8, 1.0):
+        if frac >= limit * level and (today, scope, level) not in _alerted:
+            _alerted.add((today, scope, level))
+            msg = (f"⚠ Pérdida diaria {scope}: {pnl:.2f} USD ({frac*100:.1f}%, límite {limit*100:.0f}%) — "
+                   f"{'límite SUPERADO' if level == 1.0 else 'cerca del límite'}. "
+                   f"El bot sigue operando: deténlo si no quieres continuar.")
+            logger.warning(msg)
+            notify(msg)
+
 
 def can_open_trade(action: str, symbol: str = None) -> Tuple[bool, str]:
     """
@@ -344,6 +417,12 @@ def can_open_trade(action: str, symbol: str = None) -> Tuple[bool, str]:
     acc = get_account_info()
     if acc is None:
         return False, "No se pudo obtener info de la cuenta"
+    global _peak, _dd_stopped
+    _peak = max(_peak, acc.equity)
+    pct = getattr(_cfg, "MAX_DD_PCT", None)
+    if _dd_stopped or dd_halted(acc.equity, _peak, pct):
+        _dd_stopped = True
+        return False, f"Corte total: la equity cayó {pct:.0%} desde su máximo ({_peak:,.2f}); reinicia el bot para seguir"
     tier = capital_tier(min(acc.balance, acc.equity))
     # Todas las posiciones de este MAGIC, en cualquier activo: el nivel limita el riesgo TOTAL abierto
     open_pos = [p for p in (mt5.positions_get() or []) if p.magic == MAGIC_NUMBER]

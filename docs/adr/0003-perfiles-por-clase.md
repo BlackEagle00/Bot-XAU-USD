@@ -1,7 +1,8 @@
 # ADR 0003: Perfiles independientes por clase de activo, calibrados con walk-forward
 
 ## Estado
-Aceptado
+Reemplazado (2026-10-23): el panel quedó solo en XAUUSD, con un perfil por modelo igual a su bot.
+Los perfiles por clase están archivados en `../_archivo_otros_activos/panel_perfiles/`.
 
 ## Fecha
 2026-10-16

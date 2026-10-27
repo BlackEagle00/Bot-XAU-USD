@@ -29,8 +29,9 @@ from config import (
     USE_PROGRESSIVE_TRAIL, TRAIL_LOCK_START_ATR,
     TRAIL_LOCK_PCT_MIN, TRAIL_LOCK_PCT_MAX, TRAIL_LOCK_FULL_ATR,
 )
-from .data_handler import get_open_positions, get_tick
-from .telegram_notifier import notify
+from .data_handler import get_open_positions, get_tick, server_now
+import config as _cfg
+from .telegram_notifier import notify, play_trade_sound
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -128,6 +129,7 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
             f"✅ {action} {symbol} abierto | Ticket: #{result.order} | Lote: {lot} | "
             f"Entry: {exec_price:.{digits}f} | SL: {sl:.{digits}f} | TP: {tp:.{digits}f}"
         )
+        play_trade_sound("alert.wav")
         notify(
             f"🟢 {action} abierto #{result.order} {symbol} | Lote {lot} | "
             f"Entry {exec_price:.{digits}f} | SL {sl:.{digits}f} | TP {tp:.{digits}f}"
@@ -139,6 +141,48 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
         f"Descripción: {result.comment} | Último error: {mt5.last_error()}"
     )
     return None
+
+
+def place_pending(action: str, price: float, lot: float, sl: float, tp: float,
+                  symbol_info, comment: str = "", symbol: str = None) -> Optional[int]:
+    """Orden LÍMITE (BUY_LIMIT bajo el ask / SELL_LIMIT sobre el bid): se activa si el precio llega. Grid."""
+    symbol = symbol or SYMBOL
+    digits = symbol_info.digits
+    request = {
+        "action":       mt5.TRADE_ACTION_PENDING,
+        "symbol":       symbol,
+        "volume":       float(lot),
+        "type":         mt5.ORDER_TYPE_BUY_LIMIT if action == "BUY" else mt5.ORDER_TYPE_SELL_LIMIT,
+        "price":        round(price, digits),
+        "sl":           round(sl, digits),
+        "tp":           round(tp, digits),
+        "magic":        MAGIC_NUMBER,
+        "comment":      f"{ORDER_COMMENT_PREFIX} {comment}"[:31],
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_RETURN,   # las pendientes no admiten FOK/IOC en muchos brokers
+    }
+    result = mt5.order_send(request)
+    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+        logger.info(f"⏳ {action} LIMIT {symbol} @ {price:.{digits}f} | Lote {lot} | TP {tp:.{digits}f} | {comment}")
+        return result.order
+    logger.error(f"❌ Error colocando {action} LIMIT @ {price:.{digits}f} | "
+                 f"retcode: {result.retcode if result else 'None'} | {mt5.last_error()}")
+    return None
+
+
+def cancel_pending_orders(symbol: str = None, tickets=None) -> int:
+    """Cancela las órdenes pendientes de este bot (MAGIC_NUMBER), o solo `tickets`. Devuelve cuántas se cancelaron."""
+    from .data_handler import get_pending_orders
+    done = 0
+    for o in get_pending_orders(symbol):
+        if tickets is not None and o.ticket not in tickets:
+            continue
+        result = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            done += 1
+        else:
+            logger.error(f"❌ No se pudo cancelar la pendiente #{o.ticket}: {mt5.last_error()}")
+    return done
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -471,7 +515,14 @@ def manage_open_trades(atr: float, symbol_info) -> None:
     if not positions:
         return
 
+    hold = getattr(_cfg, "MAX_HOLD_MINUTES", None)        # scalping corto: cierre por tiempo, como las cestas del grid
+    now = server_now() if hold else None
     for pos in positions:
+        if now is not None and now.timestamp() - pos.time >= hold * 60:
+            logger.info(f"⏱  #{pos.ticket} cerrada por tiempo: {hold} min sin tocar TP ni SL "
+                        f"(P&L {pos.profit:+.2f})")
+            close_trade(pos.ticket, symbol_info)
+            continue
         moved_be = update_breakeven(pos, atr, symbol_info)
         if not moved_be:
             update_trailing_stop(pos, atr, symbol_info)

@@ -105,6 +105,13 @@ def get_open_positions(symbol: str = None) -> list:
     return [p for p in positions if p.magic == MAGIC_NUMBER]
 
 
+def get_pending_orders(symbol: str = None) -> list:
+    """Órdenes pendientes (límites del grid) de este bot (filtradas por MAGIC_NUMBER)."""
+    from config import MAGIC_NUMBER
+    orders = mt5.orders_get(symbol=symbol or SYMBOL)
+    return [o for o in (orders or []) if o.magic == MAGIC_NUMBER]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ORDER-FLOW — presión compradora/vendedora aproximada por ticks
 # ═══════════════════════════════════════════════════════════════════════════════

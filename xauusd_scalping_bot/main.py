@@ -7,7 +7,7 @@ bot_engine`), y arranca el motor compartido.
 
 Uso:
     python main.py
-    # o desde la raíz:  python run.py <oro|oro_scalping|eurusd|eurusd_scalping>
+    # o desde la raíz:  python run.py <oro|oro_scalping>
 """
 import sys
 from pathlib import Path

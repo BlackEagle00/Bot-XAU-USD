@@ -2,12 +2,12 @@
 Backtest del MOTOR REAL (bot_engine) + filtro predictivo, sobre el histórico de MT5.
 
 Uso (desde la raíz del repo, con el terminal MT5 abierto):
-    python backtesting/engine_backtest.py xauusd_bot H4                    # oro, config del bot
-    python backtesting/engine_backtest.py swing H1 --symbol EURUSD --ml    # perfil del panel
+    python backtesting/engine_backtest.py xauusd_bot H1                    # config de un bot
+    python backtesting/engine_backtest.py xauusd_swing H1 --ml             # perfil del panel
     opciones: --years 3  --balances 100,1000,10000  --ml  --mc 2000  --workers N  --refresh
 
-Perfil = carpeta de un bot (usa su config.py) o "scalping" / "swing" (dashboard/profiles: el
-config del oro con las claves en dólares neutralizadas, válido para cualquier activo).
+Perfil = carpeta de un bot (usa su config.py) o un perfil del panel (dashboard/profiles/xauusd_<modo>,
+mismo config que su bot con la identidad del panel).
 
 Flujo (guía backtesting-frameworks: datos point-in-time, costos reales, walk-forward, Monte Carlo):
   1. Señales: al cierre de cada vela primaria, SOLO con velas ya cerradas de las 3 temporalidades,
@@ -49,12 +49,15 @@ DATA    = ROOT / "backtesting" / "data"
 REPORTS = ROOT / "backtesting" / "reports"
 
 # primaria → (tendencia, superior)
-TF_MAP = {"M5": ("M15", "H1"), "M10": ("M30", "H1"), "M15": ("H1", "H4"),
+TF_MAP = {"M1": ("M5", "M15"), "M5": ("M15", "H1"), "M10": ("M30", "H1"), "M15": ("H1", "H4"),
           "H1": ("H4", "D1"), "H4": ("D1", "W1"), "D1": ("W1", "MN1"), "W1": ("MN1", None)}
-TF_MIN = {"M5": 5, "M10": 10, "M15": 15, "M30": 30, "H1": 60, "H4": 240,
+TF_MIN = {"M1": 1, "M5": 5, "M10": 10, "M15": 15, "M30": 30, "H1": 60, "H4": 240,
           "D1": 1440, "W1": 10080, "MN1": 44640}
 BUY, SELL = 0, 1   # = mt5.ORDER_TYPE_BUY / SELL
-SIG_VERSION = 2    # formato del caché de señales (2: + tendencia del TF superior)
+SIG_VERSION = 3    # formato del caché de señales (2: + tendencia del TF superior; 3: score sin redondear)
+# Claves de riesgo que no cambian las señales: un --set con ellas reusa el caché de señales
+POST_KEYS = {"MAX_RISK_MIN_LOT", "MICRO_SL_FIT", "MICRO_MIN_SL_ATR", "GRID_EXEC_TF", "MAX_HOLD_MINUTES", "DAILY_LOSS_ALERT_ONLY",
+             "MAX_SPREAD_POINTS", "BT_REAL_SPREAD"}
 
 # (SL, TP) en múltiplos de ATR. (None, None) = los del config. TP < SL sube el acierto y baja la ganancia por operación.
 COMBOS = [(None, None), (1.5, 0.5), (1.5, 0.75), (1.5, 1.0), (2.0, 0.5), (2.0, 0.75), (2.0, 1.0), (2.0, 1.5)]
@@ -65,6 +68,7 @@ TAU_GRID      = np.round(np.arange(0.50, 0.951, 0.025), 3)
 MAX_HOLD_BARS = 500                       # tope de la triple barrera
 TEST_DAYS     = 91                        # walk-forward: ventanas de prueba trimestrales
 FIRST_TEST    = 0.40                      # la primera prueba empieza tras el 40% del periodo
+IS_FRACTION   = 0.60                      # análisis: 60% inicial in-sample, 40% final fuera de muestra
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -193,9 +197,8 @@ def load_engine(profile: str, primary: str, symbol: str = None, overrides: dict 
 def engine_hash(profile: str, overrides: dict = None) -> str:
     """Huella del código, la config y los --set: si cambian, la caché de señales se recalcula."""
     h = hashlib.md5(repr(sorted((overrides or {}).items())).encode())
-    files = sorted((ROOT / "bot_engine").glob("*.py")) + [profile_dir(profile) / "config.py",
-             ROOT / "dashboard" / "profiles" / "_base.py"] + [ROOT / b / "config.py" for b in
-             ("xauusd_bot", "xauusd_scalping_bot", "eurusd_bot", "eurusd_scalping_bot")]
+    files = (sorted((ROOT / "bot_engine").glob("*.py")) + [profile_dir(profile) / "config.py"]
+             + sorted(ROOT.glob("*/config.py")) + sorted((ROOT / "dashboard" / "profiles").rglob("*.py")))
     for f in files:
         h.update(f.read_bytes())
     return h.hexdigest()[:10]
@@ -206,16 +209,17 @@ def engine_hash(profile: str, overrides: dict = None) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch(mt5, symbol: str, tf: str, start: datetime, end: datetime, refresh: bool) -> pd.DataFrame:
-    """Velas [start, end) por tramos de 90 días (el terminal limita las velas por pedido). Con caché."""
+    """Velas [start, end) por tramos (el terminal limita las velas por pedido). Con caché."""
     path = DATA / f"{symbol}_{tf}_{start:%Y%m%d}_{end:%Y%m%d}.csv.gz"
     if path.exists() and not refresh:
         return pd.read_csv(path)
     parts, t = [], start
+    step = timedelta(days=20 if tf == "M1" else 90)   # M1: un pedido de 90 días (≈ 90 000 velas) vuelve vacío
     while t < end:
-        r = mt5.copy_rates_range(symbol, getattr(mt5, f"TIMEFRAME_{tf}"), t, min(t + timedelta(days=90), end))
+        r = mt5.copy_rates_range(symbol, getattr(mt5, f"TIMEFRAME_{tf}"), t, min(t + step, end))
         if r is not None and len(r):
             parts.append(pd.DataFrame(r))
-        t += timedelta(days=90)
+        t += step
     if not parts:
         return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume", "spread"])
     df = (pd.concat(parts).drop_duplicates("time").sort_values("time")
@@ -281,16 +285,28 @@ def _signal_at(i):
     if s["action"] in ("BUY", "SELL"):
         feats = _W["feat"](1 if s["action"] == "BUY" else -1, price, ip, it, ih, s, spread, t)
     macro = _W["macro"](ih) if ih else "neutral"           # para aplicar REQUIRE_MACRO_FOR_SELL después (calibrate.py)
-    return i, s["action"], float(s["score"]), float(atr), feats, macro
+    return i, s["action"], float(s.get("raw_score", s["score"])), float(atr), feats, macro
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. RESULTADO DE CADA SEÑAL (triple barrera con BE+/trailing)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def make_outcome(arr, atr_at, sym, rm, tm):
-    """Devuelve outcome(i, side, sl_mult, tp_mult) → (R, exit_idx, entry, sl0, motivo) | 'rr' | 'spread'."""
+def real_spread(bar_pts, times, close, symbol: str):
+    """Spread por vela (puntos) = max(el de la vela, un cuantil del perfil REAL de su hora del servidor).
+    Las velas guardan el spread MÍNIMO; el perfil sale de los ticks (backtesting/spread_profile.py) y se
+    escala por precio (close / último close): con el oro a la mitad, el spread en puntos también era menor."""
+    hours = json.loads((DATA / f"spread_profile_{symbol}.json").read_text(encoding="utf-8"))["hours"]
+    prof = np.array([hours.get(str(h), [0.0] * 20) for h in range(24)])
+    q = np.random.default_rng(0).integers(0, prof.shape[1], len(bar_pts))
+    return np.maximum(bar_pts, prof[(times // 3600) % 24, q] * close / close[-1])
+
+
+def make_outcome(arr, atr_at, sym, rm, tm, max_bars: int = MAX_HOLD_BARS):
+    """Devuelve outcome(i, side, sl_mult, tp_mult) → (R, exit_idx, entry, sl0, motivo) | 'rr' | 'spread'.
+    max_bars: velas hasta el cierre por TIEMPO (MAX_HOLD_MINUTES del config, como trade_manager en vivo)."""
     o, h, l, c, sp = arr
+    max_spread = getattr(rm._cfg, "MAX_SPREAD_POINTS", float("inf"))
     cur = NS(pos=None, bid=0.0, ask=0.0)
 
     def _set_sl(ticket, new_sl, tp, digits):
@@ -307,10 +323,10 @@ def make_outcome(arr, atr_at, sym, rm, tm):
         if not rm.check_risk_reward(px, sl, tp, tpm / slm * 0.9 if slm else None)[0]:
             return "rr"
         risk = abs(px - sl)
-        if not rm.spread_ok(sp[k], risk):
+        if not rm.spread_ok(sp[k], risk) or sp[k] / sym.point >= max_spread:   # = connection.is_market_open
             return "spread"
         pos = cur.pos = NS(ticket=0, type=side, price_open=px, sl=sl, tp=tp, price_current=px)
-        last = min(len(o), k + MAX_HOLD_BARS) - 1
+        last = min(len(o), k + max_bars) - 1
         for j in range(k, last + 1):
             x = exit_price(side, o[j], h[j], l[j], sp[j], pos.sl, pos.tp, fresh=(j == k))
             timed_out = x is None and j == last
@@ -334,9 +350,12 @@ def make_outcome(arr, atr_at, sym, rm, tm):
 # 3. CUENTA (niveles por capital, lote dinámico, límites)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: float, start_idx: int):
+def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: float, start_idx: int,
+             outcome=None):
     """
     cands = {vela de entrada k: (side, R, exit_idx, entry, sl0, motivo, atr)}.
+    outcome = make_outcome(...): con MICRO_SL_FIT, si ni el lote mínimo cabe, se vuelve a simular la
+    señal con el SL/TP acercado de risk_manager.micro_sl_distance (mismo R:R), igual que en vivo.
     Devuelve (trades, curva [(time, equity)], bloqueos).
     """
     o, c = p["open"].to_numpy(float), p["close"].to_numpy(float)
@@ -344,7 +363,7 @@ def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: f
     balance, open_pos, trades, curve = balance0, [], [], []
     blocked = dict(max_open=0, anti_dup=0, lot0=0, daily_halt=0)
     halt_day = day = None
-    day_realized = 0.0
+    day_realized, peak, dd_stop = 0.0, 0.0, False
 
     def unrealized(bid, spr):
         return sum(((bid - q["entry"]) if q["side"] == BUY else (q["entry"] - bid - spr)) * q["lot"] * vpu
@@ -356,13 +375,20 @@ def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: f
             day, day_realized = d, 0.0
         cand = cands.get(k)
         if cand:
-            side, R, exit_idx, entry, sl0, reason, atr = cand
+            side, R, exit_idx, entry, sl0, reason, atr, *rr = cand    # rr: TP/SL del combo (ML), si viene
             eq = balance + unrealized(o[k], sp[k])
             tier = rm.capital_tier(min(balance, eq))
-            if halt_day != day and day_realized + eq - balance <= -tier["daily_loss"] * balance:
+            peak = max(peak, eq)                                # corte total MAX_DD_PCT, igual que can_open_trade
+            if not dd_stop and rm.dd_halted(eq, peak, getattr(cfg, "MAX_DD_PCT", None)):
+                dd_stop = True
+                blocked["dd_halt_at"] = _d(int(tt[k]))
+            if (not getattr(cfg, "DAILY_LOSS_ALERT_ONLY", False) and halt_day != day      # modo alerta: avisa, no corta
+                    and day_realized + eq - balance <= -tier["daily_loss"] * balance):
                 halt_day = day
             mid = o[k] + sp[k] / 2
-            if halt_day == day:
+            if dd_stop:
+                blocked["dd_halt"] = blocked.get("dd_halt", 0) + 1
+            elif halt_day == day:
                 blocked["daily_halt"] += 1
             elif len(open_pos) >= tier["max_open"]:
                 blocked["max_open"] += 1
@@ -371,6 +397,15 @@ def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: f
                 blocked["anti_dup"] += 1
             else:
                 lot = rm.lot_plan(NS(balance=balance, equity=eq), sym, abs(entry - sl0))[0]
+                dist = (rm.micro_sl_distance(min(balance, eq), sym, atr)
+                        if outcome and rm.over_min_lot_cap(NS(balance=balance, equity=eq), sym, abs(entry - sl0)) else None)
+                if dist and dist < abs(entry - sl0):            # cuenta pequeña: SL/TP acercados, mismo R:R
+                    slm = dist / atr
+                    res = outcome(k - 1, side, slm, slm * (rr[0] if rr else cfg.TP_ATR_MULT / cfg.SL_ATR_MULT))
+                    if isinstance(res, tuple):
+                        R, exit_idx, entry, sl0, reason = res
+                        lot = rm.lot_plan(NS(balance=balance, equity=eq), sym, abs(entry - sl0))[0]
+                        blocked["micro_sl"] = blocked.get("micro_sl", 0) + 1
                 if lot <= 0:
                     blocked["lot0"] += 1
                 else:
@@ -388,11 +423,206 @@ def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: f
     return trades, curve, blocked
 
 
+def simulate_grid(sig: pd.DataFrame, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: float,
+                  start_idx: int, tf_min: int, thr: float = None):
+    """
+    Grid + cesta (bot_engine/grid.py) vela por vela. Una cesta se abre en la apertura siguiente a una
+    señal BUY/SELL con |score| ≥ thr (None → cfg.MIN_SIGNAL_SCORE), dimensionada por riesgo
+    (grid.build_basket) y solo en horario permitido (grid.entry_allowed). Dentro de cada vela, orden
+    CONSERVADOR: hueco de apertura → extremo ADVERSO (límites y SL común, en el orden en que el precio los
+    cruza) → extremo FAVORABLE (TP cortos, TP de cesta) → al cierre, tiempo máximo y corte por drawdown.
+    Un límite llenado en el mínimo de una vela no puede salir en su máximo (eso supondría que el mínimo
+    llegó primero). El viernes a GRID_FRIDAY_CLOSE_HOUR la cesta se cierra en la apertura de la vela.
+    Devuelve (trades, curva, bloqueos, cestas).
+    """
+    from bot_engine import grid
+    thr = cfg.MIN_SIGNAL_SCORE if thr is None else thr
+    ev = sig[sig["action"].isin(["BUY", "SELL"]) & (sig["score"].abs() >= thr)
+             & (sig["score"].abs() <= getattr(cfg, "GRID_MAX_SCORE", float("inf")))]   # igual que grid.extra_basket_block
+    cands = {int(i) + 1: (a, float(x)) for i, a, x in zip(ev["i"], ev["action"], ev["atr"])}
+    o, h, l, c = (p[k].to_numpy(float) for k in ("open", "high", "low", "close"))
+    sp, tt = p["spread"].to_numpy(float) * sym.point, p["time"].to_numpy(np.int64)
+    balance, trades, curve, baskets = balance0, [], [], []
+    blocked = dict(daily_halt=0, spread=0, busy=0, hours=0, capital=0, halted=0)
+    acct_cut = getattr(cfg, "ACCOUNT_MAX_DAILY_LOSS_PCT", rm.ACCOUNT_MAX_DAILY_LOSS_PCT)
+    halt_day = day = None
+    day_realized, peak, halted_at = 0.0, balance0, None
+    B = None                                              # cesta abierta
+
+    def ex(x, s):                                         # precio de cierre: BUY al bid, SELL al ask
+        return x if B["d"] == 1 else x + s
+
+    def en(x, s):                                         # precio de entrada: BUY al ask, SELL al bid
+        return x + s if B["d"] == 1 else x
+
+    def live():
+        return [lv for lv in B["levels"] if lv["entry"] is not None]
+
+    def ready():
+        """Posiciones que ya existían al empezar la vela (ver docstring)."""
+        return [lv for lv in live() if not lv.get("intrabar")]
+
+    def floating(x, s, pos=None):
+        return sum(lv["lot"] * B["d"] * (ex(x, s) - lv["entry"]) * vpu for lv in (live() if pos is None else pos))
+
+    def close(lv, price, k, reason):
+        nonlocal balance, day_realized
+        pnl = lv["lot"] * B["d"] * (price - lv["entry"]) * vpu
+        balance += pnl
+        day_realized += pnl
+        B["realized"] += pnl
+        B["trades"] += 1
+        trades.append(dict(side=B["side"], open_time=int(tt[lv["open_k"]]), close_time=int(tt[k]), lot=lv["lot"],
+                           pnl=round(pnl, 2), r=round(pnl / B["risk"], 3), reason=reason,
+                           bars=k - lv["open_k"] + 1, tier="Grid", level=lv["k"]))
+        lv["entry"] = None
+
+    def end_basket(k, reason, price):
+        nonlocal B
+        for lv in live():
+            close(lv, price, k, reason)
+        baskets.append(dict(side=B["side"], open_time=int(tt[B["open_k"]]), close_time=int(tt[k]), reason=reason,
+                            pnl=round(B["realized"], 2), ret=B["realized"] / B["eq0"], risk_pct=B["risk"] / B["eq0"],
+                            trades=B["trades"], max_levels=B["max_live"], n_levels=len(B["levels"]),
+                            minutes=(int(tt[k]) - int(tt[B["open_k"]])) / 60 + tf_min))
+        B = None
+
+    def exit_at(target, x_from, x, s, gap, pos):
+        """Precio de salida al que el P&L de la cesta = target, dentro del tramo recorrido x_from → x."""
+        lots = sum(lv["lot"] for lv in pos)
+        if gap or lots == 0:
+            return ex(x, s)
+        px = (target - B["realized"]) / (B["d"] * lots * vpu) + sum(lv["lot"] * lv["entry"] for lv in pos) / lots
+        lo, hi = sorted((ex(x_from, s), ex(x, s)))
+        return min(max(px, lo), hi)
+
+    def touch(k, x, s, x_from, gap):
+        """El precio (bid) va de x_from a x. gap=True: salto de apertura. Devuelve True si cerró la cesta."""
+        d = B["d"]
+        adverse = gap or d * (x - x_from) <= 0
+        if adverse:
+            # límites (BUY se llena con ask ≤ nivel → bid ≤ nivel − spread) y SL común, en orden de cruce
+            evs = [((lv["price"] - s) if d == 1 else lv["price"], lv) for lv in B["levels"]
+                   if lv["armed"] and lv["entry"] is None]
+            evs.append((B["sl"] if d == 1 else B["sl"] - s, None))
+            evs = sorted((e for e in evs if d * (x - e[0]) <= 0 and (gap or d * (e[0] - x_from) <= 0)),
+                         key=lambda e: -d * e[0])
+            for _, lv in evs:
+                if lv is None:                             # stop de cesta: el SL común cierra todo
+                    end_basket(k, "CESTA_STOP", ex(x, s) if gap else B["sl"])
+                    return True
+                lv.update(entry=en(x, s) if gap else lv["price"], open_k=k, armed=False, intrabar=not gap)
+                B["max_live"] = max(B["max_live"], len(live()))
+            if balance + floating(x, s) <= 0:              # cuenta quebrada (hueco): stop-out
+                end_basket(k, "QUIEBRA", ex(x, s))
+                return True
+        if gap or not adverse:
+            for lv in ready():                             # TP corto de cada operación → re-armar el nivel
+                if d * (ex(x, s) - lv["tp"]) >= 0:
+                    close(lv, ex(x, s) if gap else lv["tp"], k, "TP")
+                    lv["armed"] = True
+            if B["realized"] + floating(x, s, ready()) >= B["tp_usd"]:
+                px = exit_at(B["tp_usd"], x_from, x, s, gap, ready())
+                for lv in live():                          # en el peor orden, sus límites aún no se habían llenado
+                    if lv.get("intrabar"):
+                        lv["entry"] = None
+                end_basket(k, "CESTA_TP", px)
+                return True
+        return False
+
+    for k in range(start_idx, len(p)):
+        now = datetime.fromtimestamp(int(tt[k]), tz=timezone.utc)   # hora del servidor de MT5
+        if now.date() != day:
+            day, day_realized = now.date(), 0.0
+        s, fresh = sp[k], False
+        if B is not None and grid.must_flatten(now, cfg):
+            end_basket(k, "FINDE", ex(o[k], s))
+        cand = cands.get(k)
+        if cand and halted_at is not None:
+            blocked["halted"] += 1
+        elif cand and B is not None:
+            blocked["busy"] += 1
+        elif cand:
+            side, atr = cand
+            tier = rm.capital_tier(balance)
+            if halt_day != day and day_realized <= -min(tier["daily_loss"], acct_cut) * balance:
+                halt_day = day
+            if halt_day == day:
+                blocked["daily_halt"] += 1
+            elif not grid.entry_allowed(now, cfg):
+                blocked["hours"] += 1
+            elif not rm.spread_ok(s, atr * min(grid.p("GRID_SPACING_ATR", cfg), grid.p("GRID_TRADE_TP_ATR", cfg))):
+                blocked["spread"] += 1
+            else:
+                dd = 1 if side == "BUY" else -1
+                entry = o[k] + s if dd == 1 else o[k]
+                b = grid.build_basket(side, entry, atr, balance, sym, vpu, cfg)
+                if b is None:
+                    blocked["capital"] += 1
+                else:
+                    for lv in b["levels"]:
+                        lv.update(entry=None, open_k=k, armed=lv["k"] > 0)
+                    b["levels"][0]["entry"] = entry
+                    B = dict(side=side, d=dd, levels=b["levels"], sl=b["sl"], open_k=k, eq0=balance, realized=0.0,
+                             trades=0, max_live=1, risk=b["risk_usd"], tp_usd=b["tp_usd"])
+                    fresh = True
+        if B is not None:
+            adv, fav = (l[k], h[k]) if B["d"] == 1 else (h[k], l[k])
+            done = ((not fresh and touch(k, o[k], s, o[k], True)) or touch(k, adv, s, o[k], False)
+                    or touch(k, fav, s, adv, False))
+            if not done and (int(tt[k]) - int(tt[B["open_k"]])) / 60 + tf_min >= grid.p("GRID_MAX_MINUTES", cfg):
+                end_basket(k, "TIEMPO", ex(c[k], s))
+            if B is not None:
+                for lv in B["levels"]:
+                    lv["intrabar"] = False
+        eq = balance + (floating(c[k], s) if B else 0.0)
+        peak = max(peak, eq)
+        if halted_at is None and grid.dd_halt(eq, peak, cfg):     # corte por drawdown: cerrar y no abrir más
+            if B is not None:
+                end_basket(k, "DD", ex(c[k], s))
+            halted_at, eq = int(tt[k]), balance
+        curve.append((int(tt[k]), eq))
+    if B is not None:                                      # fin de los datos: cerrar al último cierre
+        end_basket(len(p) - 1, "TIEMPO", ex(c[-1], sp[-1]))
+    blocked["halted_at"] = _d(halted_at) if halted_at else None
+    return trades, curve, blocked, baskets
+
+
+def grid_stats(baskets: list) -> dict:
+    """Resumen por CESTA (la unidad de riesgo del grid)."""
+    if not baskets:
+        return {"baskets": 0}
+    pnl = np.array([b["pnl"] for b in baskets])
+    ret = np.array([b["ret"] for b in baskets])
+    return {"baskets": len(baskets), "basket_win_pct": round(float((pnl > 0).mean()) * 100, 1),
+            "avg_basket_pnl": round(float(pnl.mean()), 2), "worst_basket": round(float(pnl.min()), 2),
+            "best_basket": round(float(pnl.max()), 2), "worst_basket_ret_pct": round(float(ret.min()) * 100, 2),
+            "avg_basket_minutes": round(float(np.mean([b["minutes"] for b in baskets])), 1),
+            "avg_trades_per_basket": round(float(np.mean([b["trades"] for b in baskets])), 1),
+            "max_levels": int(max(b["max_levels"] for b in baskets)),
+            "avg_risk_pct": round(float(np.mean([b["risk_pct"] for b in baskets])) * 100, 2),
+            "avg_levels": round(float(np.mean([b["n_levels"] for b in baskets])), 1),
+            "exits": {r: sum(b["reason"] == r for b in baskets)
+                      for r in ("CESTA_TP", "CESTA_STOP", "TIEMPO", "FINDE", "DD", "QUIEBRA")},
+            "ruined": any(b["reason"] == "QUIEBRA" for b in baskets)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. WALK-FORWARD DEL FILTRO PREDICTIVO
 # ═══════════════════════════════════════════════════════════════════════════════
 
+CLF = "hgb"        # --clf: "hgb" (gradient boosting) | "mlp" (red neuronal; mismo walk-forward purgado)
+
+
 def _classifier():
+    if CLF == "mlp":
+        from sklearn.impute import SimpleImputer
+        from sklearn.neural_network import MLPClassifier
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        return make_pipeline(SimpleImputer(), StandardScaler(),
+                             MLPClassifier(hidden_layer_sizes=(32, 16), alpha=1e-3, early_stopping=True,
+                                           max_iter=400, random_state=0))
     from sklearn.ensemble import HistGradientBoostingClassifier
     return HistGradientBoostingClassifier(max_iter=150, learning_rate=0.05, max_leaf_nodes=15,
                                           min_samples_leaf=40, l2_regularization=1.0, random_state=0)
@@ -497,13 +727,48 @@ def metrics(trades: list, curve: list, start_balance: float, with_daily: bool = 
         "avg_bars": round(float(np.mean([t["bars"] for t in trades])), 1) if trades else 0.0,
         "worst_losing_streak": worst,
         "trades_per_month": round(len(trades) / (years * 12), 1) if years > 0 else 0.0,
-        "exits": {r: sum(t["reason"] == r for t in trades) for r in ("TP", "SL", "HUECO", "TIEMPO")},
+        "exits": {r: sum(t["reason"] == r for t in trades)
+                  for r in sorted({"TP", "SL", "HUECO", "TIEMPO"} | {t["reason"] for t in trades})},
         "by_year": dict(sorted(by_year.items())), "sides": sides,
+        **trade_timing(trades, curve, start_balance),
     }
     m["verdict"] = verdict(m)
     if with_daily:
         m["equity_daily"] = [[d.strftime("%Y-%m-%d"), round(float(v), 2)] for d, v in days.items()]
     return m
+
+
+# Horas del SERVIDOR de MT5: las velas vienen en hora del servidor (MetaQuotes-Demo ≈ UTC+2/+3)
+SESSIONS = (("Asia", 1, 10), ("Londres", 10, 15), ("Nueva York", 15, 23), ("Cierre", 23, 25))
+
+
+def trade_timing(trades: list, curve: list, start_balance: float) -> dict:
+    """Análisis para operaciones cortas: duración, sesión de apertura, tiempo hasta duplicar la cuenta."""
+    mins = np.array([(t["close_time"] - t["open_time"]) / 60 for t in trades]) if trades else np.array([0.0])
+    by_session = {}
+    for name, a, b in SESSIONS:
+        sel = [t for t in trades if a <= (datetime.fromtimestamp(t["open_time"], tz=timezone.utc).hour or 24) < b]
+        if sel:
+            by_session[name] = {"trades": len(sel), "pnl": round(sum(t["pnl"] for t in sel), 2),
+                                "win_pct": round(100 * sum(t["pnl"] > 0 for t in sel) / len(sel), 1)}
+    eq = [(t, e) for t, e in curve]
+    x2 = next((t for t, e in eq if e >= 2 * start_balance), None)
+    return {"avg_minutes": round(float(mins.mean()), 1), "median_minutes": round(float(np.median(mins)), 1),
+            "by_session": by_session, "max_equity": round(max([e for _, e in eq] or [start_balance]), 2),
+            "days_to_double": round((x2 - eq[0][0]) / 86400, 1) if x2 is not None and eq else None}
+
+
+def split_stats(trades: list, t_split: int) -> dict:
+    """In-sample (antes de t_split) vs fuera de muestra (después): los parámetros se eligen solo con IS."""
+    out = {}
+    for name, part in (("is", [t for t in trades if t["open_time"] < t_split]),
+                       ("oos", [t for t in trades if t["open_time"] >= t_split])):
+        pnl = np.array([t["pnl"] for t in part]) if part else np.array([])
+        gl = float(-pnl[pnl < 0].sum())
+        out[name] = {"trades": len(part), "pnl": round(float(pnl.sum()), 2),
+                     "win_pct": round(float((pnl > 0).mean()) * 100, 1) if len(pnl) else 0.0,
+                     "pf": round(float(pnl[pnl > 0].sum()) / gl, 2) if gl > 0 else None}
+    return out
 
 
 def verdict(m: dict) -> str:
@@ -523,8 +788,8 @@ def verdict(m: dict) -> str:
 # PUNTO DE ENTRADA
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def prepare_data(config, primary: str, years: float, refresh: bool = False):
-    """Velas de las 3 temporalidades (con calentamiento), datos del símbolo y valor real por lote."""
+def prepare_data(config, primary: str, years: float, refresh: bool = False, end: str = None, exec_tf: str = None):
+    """Velas de las 3 temporalidades (+ la de ejecución del grid, "x"), datos del símbolo y valor real por lote."""
     import MetaTrader5 as mt5
     if not mt5.initialize():
         sys.exit(f"No se pudo conectar a MT5: {mt5.last_error()}")
@@ -533,7 +798,8 @@ def prepare_data(config, primary: str, years: float, refresh: bool = False):
         sys.exit(f"{sym_name} no existe en este broker")
     info = mt5.symbol_info(sym_name)
     trend_tf, higher_tf = TF_MAP[primary]
-    end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = (datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc) if end else   # --end: repetir un periodo
+           datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0))
     start = end - timedelta(days=round(365.25 * years))
 
     def warm(tf, n):                       # calentamiento para los indicadores (1.6 → fines de semana)
@@ -541,7 +807,7 @@ def prepare_data(config, primary: str, years: float, refresh: bool = False):
 
     frames, coverage = {}, {}
     for key, tf, n in (("p", primary, config.CANDLES_PRIMARY), ("t", trend_tf, config.CANDLES_TREND),
-                       ("h", higher_tf, config.CANDLES_HIGHER)):
+                       ("h", higher_tf, config.CANDLES_HIGHER), ("x", exec_tf if exec_tf != primary else None, 200)):
         if tf is None:
             frames[key] = None
             continue
@@ -567,6 +833,64 @@ def prepare_data(config, primary: str, years: float, refresh: bool = False):
               start=start, end=end, first_idx=first_idx)
 
 
+def exec_signals(sig: pd.DataFrame, t_close: np.ndarray, x: pd.DataFrame) -> pd.DataFrame:
+    """
+    Grid "analiza en el TF mayor, opera corto": la señal de la vela de análisis i se ejecuta en la primera
+    vela de ejecución que abre ≥ el cierre de i, con el ATR de ejecución de la vela anterior (ya cerrada).
+    Devuelve el formato de `sig` con i = índice de ejecución − 1 (simulate_grid entra en i + 1).
+    """
+    from bot_engine.indicators import calc_atr
+    ev = sig[sig["action"].isin(["BUY", "SELL"])]
+    xt = x["time"].to_numpy(np.int64)
+    atr = calc_atr(x["high"], x["low"], x["close"]).to_numpy(float)
+    k = np.searchsorted(xt, t_close[ev["i"].to_numpy(int)], side="left")
+    ok = (k >= 1) & (k < len(xt))
+    return pd.DataFrame({"i": k[ok] - 1, "action": ev["action"].to_numpy()[ok],
+                         "score": ev["score"].to_numpy(float)[ok], "atr": atr[k[ok] - 1]})
+
+
+def run_grid(a, config, rm, d, sig, tag, prof, overrides, balances, top_bal, t_split, t0):
+    """Bot grid: simulate_grid por variante (--sweep) y balance; reporte en la clave "grid"."""
+    variants = json.loads(Path(a.sweep).read_text(encoding="utf-8")) if a.sweep else [{}]
+    base_cfg = {k: getattr(config, k) for k in dir(config) if k.isupper()}
+    first_k = d.first_idx + 1
+    sig = sig.assign(atr=pd.to_numeric(sig["atr"], errors="coerce"))
+    bars, tf_min, ex_tf = d.p, TF_MIN[a.primary], a.primary
+    if d.frames.get("x") is not None:                      # ejecución en un TF más corto que el análisis
+        bars, ex_tf = d.frames["x"][0], getattr(config, "GRID_EXEC_TF")
+        tf_min = TF_MIN[ex_tf]
+        sig = exec_signals(sig, close_times(d.p["time"].to_numpy(np.int64), a.primary), bars)
+        first_k = int(np.searchsorted(bars["time"].to_numpy(np.int64), int(d.start.timestamp()))) + 1
+    report = {"profile": prof, "symbol": d.symbol, "mode": "grid", "tfs": [a.primary, *TF_MAP[a.primary]], "exec_tf": ex_tf,
+              "period": [str(d.start.date()), str(d.end.date())], "coverage": d.coverage, "overrides": overrides,
+              "is_until": _d(t_split), "value_per_price_unit_per_lot": d.vpu,
+              "not_simulated": ["filtro de noticias", "order-flow", "DXY", "swaps", "comisiones", "margen",
+                                "slippage (cierres de cesta al precio exacto del umbral)"],
+              "grid": {}}
+    for n, var in enumerate(variants):
+        cfg = NS(**{**base_cfg, **{k: v for k, v in var.items() if k != "label"}})
+        label = var.get("label", f"v{n}")
+        res = report["grid"][label] = {"params": var}
+        for bal in balances:
+            trades, curve, blocked, baskets = simulate_grid(sig, bars, d.sym, d.vpu, cfg, rm, bal, first_k,
+                                                            tf_min, cfg.MIN_SIGNAL_SCORE)
+            m = res[f"{bal:.0f}"] = {**metrics(trades, curve, bal, with_daily=f"{bal:.0f}" == top_bal),
+                                     "blocked": blocked, "split": split_stats(trades, t_split),
+                                     "basket": grid_stats(baskets),
+                                     "basket_split": {k: grid_stats([b for b in baskets if (b["open_time"] < t_split) == (k == "is")])
+                                                      for k in ("is", "oos")}}
+            if f"{bal:.0f}" == top_bal and a.mc:
+                m["mc"] = monte_carlo([b["ret"] for b in baskets], a.mc, risk=1.0)
+            g = m["basket"]
+            print(f"  {label:<22} {bal:>7,.0f} → {m['verdict']:<15} cestas {g['baskets']:>5} "
+                  f"({g.get('basket_win_pct', 0)}% ganadoras) | op {m['trades']:>5} | PF {m['profit_factor']} | "
+                  f"neto {m['net_return_pct']:+.1f}% | DD {m['max_drawdown_pct']:.1f}%", flush=True)
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    out = REPORTS / f"{tag}.json"
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    print(f"Reporte: {out} ({time.time() - t0:.0f}s)", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Backtest del motor real (+ filtro predictivo) sobre histórico de MT5.")
     ap.add_argument("profile", help="carpeta de un bot (xauusd_bot…) o perfil del panel (scalping | swing)")
@@ -578,10 +902,17 @@ def main():
     ap.add_argument("--mc", type=int, default=2000, help="simulaciones Monte Carlo (0 = no)")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--end", default=None, metavar="AAAA-MM-DD", help="fin del periodo (por defecto hoy)")
     ap.add_argument("--signals-only", action="store_true", help="solo calcular y guardar el caché de señales")
+    ap.add_argument("--sweep", default=None, metavar="JSON",
+                    help="grid: archivo con una lista de variantes {label, MIN_SIGNAL_SCORE, GRID_*: …}")
     ap.add_argument("--set", action="append", default=[], metavar="CLAVE=VALOR",
                     help="sobrescribe una clave del config solo para esta prueba (p.ej. REQUIRE_MACRO_FOR_SELL=True)")
+    ap.add_argument("--clf", choices=("hgb", "mlp"), default="hgb", help="clasificador del filtro predictivo (--ml)")
+    ap.add_argument("--suffix", default="", help="sufijo del nombre del reporte (p.ej. _final: no pisa el barrido)")
     a = ap.parse_args()
+    global CLF
+    CLF = a.clf
     import ast
     overrides = {k: ast.literal_eval(v) for k, v in (kv.split("=", 1) for kv in a.set)}
     balances = [float(x) for x in a.balances.split(",")]
@@ -589,23 +920,26 @@ def main():
 
     config, base = load_engine(a.profile, a.primary, a.symbol, overrides)
     from bot_engine import risk_manager as rm, trade_manager as tm, ml_filter
-    d = prepare_data(config, a.primary, a.years, a.refresh)
+    d = prepare_data(config, a.primary, a.years, a.refresh, a.end,
+                     getattr(config, "GRID_EXEC_TF", None) if getattr(config, "USE_GRID", False) else None)
     p, frames, coverage, sym, vpu, info = d.p, d.frames, d.coverage, d.sym, d.vpu, d.info
     sym_name, start, end, first_idx = d.symbol, d.start, d.end, d.first_idx
     trend_tf, higher_tf = TF_MAP[a.primary]
     idx = list(range(first_idx, len(p) - 1))
     prof = profile_dir(a.profile).name
-    tag = f"{prof}_{sym_name}_{a.primary}" + "".join(f"_{k}-{v}" for k, v in overrides.items())
+    tag = f"{prof}_{sym_name}_{a.primary}" + "".join(f"_{k}-{v}" for k, v in overrides.items()) + a.suffix
     print(f"{tag} | {a.primary}/{trend_tf}/{higher_tf or '-'} | velas: {len(idx)} | cobertura: {coverage}", flush=True)
 
     # ── 1. Señales (caché por huella de código + config) ────────────────────────
-    cache = DATA / f"signals_v{SIG_VERSION}_{tag}_{start:%Y%m%d}_{end:%Y%m%d}_{engine_hash(a.profile, overrides)}.pkl.gz"
+    sig_over = {k: v for k, v in overrides.items() if k not in POST_KEYS}
+    sig_tag = f"{prof}_{sym_name}_{a.primary}" + "".join(f"_{k}-{v}" for k, v in sig_over.items())
+    cache = DATA / f"signals_v{SIG_VERSION}_{sig_tag}_{start:%Y%m%d}_{end:%Y%m%d}_{engine_hash(a.profile, sig_over)}.pkl.gz"
     t0 = time.time()
     if cache.exists() and not a.refresh:
         sig = pd.read_pickle(cache)
     else:
         rows = []
-        with Pool(a.workers, initializer=_init_worker, initargs=(a.profile, a.primary, a.symbol, overrides, frames, info.point)) as pool:
+        with Pool(a.workers, initializer=_init_worker, initargs=(a.profile, a.primary, a.symbol, sig_over, {k: v for k, v in frames.items() if k != "x"}, info.point)) as pool:
             for n_done, row in enumerate(pool.imap_unordered(_signal_at, idx, chunksize=64), 1):
                 rows.append(row)
                 if n_done % 20000 == 0:
@@ -616,6 +950,9 @@ def main():
     if a.signals_only:
         print(f"  caché de señales: {cache.name} ({time.time() - t0:.0f}s)", flush=True)
         return
+    t_split = int(start.timestamp() + (end - start).total_seconds() * IS_FRACTION)
+    if getattr(config, "USE_GRID", False):
+        return run_grid(a, config, rm, d, sig, tag, prof, overrides, balances, top_bal, t_split, t0)
     atr_at = np.full(len(p), np.nan)
     atr_at[sig["i"].to_numpy()] = pd.to_numeric(sig["atr"], errors="coerce").to_numpy(float)
     ev = sig[sig["action"].isin(["BUY", "SELL"])].reset_index(drop=True)
@@ -623,8 +960,12 @@ def main():
           f"SELL {int((ev.action == 'SELL').sum())}", flush=True)
 
     # ── 2. Resultado de cada señal por combinación SL/TP ────────────────────────
-    arr = tuple(p[k].to_numpy(float) for k in ("open", "high", "low", "close")) + (p["spread"].to_numpy(float) * info.point,)
-    outcome = make_outcome(arr, atr_at, sym, rm, tm)
+    sp_pts = p["spread"].to_numpy(float)
+    if getattr(config, "BT_REAL_SPREAD", False):
+        sp_pts = real_spread(sp_pts, p["time"].to_numpy(np.int64), p["close"].to_numpy(float), sym_name)
+    arr = tuple(p[k].to_numpy(float) for k in ("open", "high", "low", "close")) + (sp_pts * info.point,)
+    hold = getattr(config, "MAX_HOLD_MINUTES", None)
+    outcome = make_outcome(arr, atr_at, sym, rm, tm, max(1, int(hold // TF_MIN[a.primary])) if hold else MAX_HOLD_BARS)
     sides = np.where(ev["action"] == "BUY", BUY, SELL)
     combos = COMBOS if a.ml else COMBOS[:1]
     outs = {c: [outcome(int(i), int(s), *c) for i, s in zip(ev["i"], sides)] for c in combos}
@@ -637,7 +978,8 @@ def main():
             c = COMBOS[0] if plan is None else plan.get(int(i))
             o = outs[c][j] if c in outs else None
             if isinstance(o, tuple):
-                out[int(i) + 1] = (int(s), o[0], o[1], o[2], o[3], o[4], float(atr_at[int(i)]))
+                out[int(i) + 1] = (int(s), o[0], o[1], o[2], o[3], o[4], float(atr_at[int(i)]),
+                                   (c[1] or config.TP_ATR_MULT) / (c[0] or config.SL_ATR_MULT))
         return out
 
     tt = p["time"].to_numpy(np.int64)
@@ -652,9 +994,9 @@ def main():
     def run_balances(key, cands, start_k):
         report[key] = {}
         for bal in balances:
-            trades, curve, blocked = simulate(cands, p, sym, vpu, config, rm, bal, start_k)
+            trades, curve, blocked = simulate(cands, p, sym, vpu, config, rm, bal, start_k, outcome)
             m = report[key][f"{bal:.0f}"] = {**metrics(trades, curve, bal, with_daily=f"{bal:.0f}" == top_bal),
-                                             "blocked": blocked}
+                                             "blocked": blocked, "split": split_stats(trades, t_split)}
             print(f"  {key:<8} {bal:>8,.0f} → {m['verdict']:<15} op {m['trades']:>5} | acierto {m['win_rate_pct']:>5}% | "
                   f"PF {m['profit_factor']} | neto {m['net_return_pct']:+.1f}% | DD {m['max_drawdown_pct']:.1f}%", flush=True)
             if f"{bal:.0f}" == top_bal and a.mc:

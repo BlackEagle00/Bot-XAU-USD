@@ -2,11 +2,11 @@
 Calibración por CLASE de activo con walk-forward (sin mirar el futuro).
 
 Uso (desde la raíz del repo, con MT5 abierto), un proceso por perfil:
-    python backtesting/calibrate.py forex_swing            # muestra la calibración
-    python backtesting/calibrate.py forex_swing --write    # y la escribe en su config.py
+    python backtesting/calibrate.py xauusd_scalping_bot --tfs M5,M15   # un bot: muestra la calibración
+    python backtesting/calibrate.py xauusd_swing --write               # un perfil del panel: y la escribe
 
 Antes hay que tener el caché de señales con umbral ≈ 0 de cada activo y TF del perfil:
-    python backtesting/engine_backtest.py forex_swing H1 --symbol EURUSD --set MIN_SIGNAL_SCORE=0.01 --signals-only
+    python backtesting/engine_backtest.py xauusd_swing H1 --set MIN_SIGNAL_SCORE=0.01 --signals-only
 
 Por qué funciona con un solo cálculo del motor: con umbral ≈ 0 el caché guarda la dirección y el
 score de cada vela, y los filtros del motor (tendencia, RSI, ADX, macro) no dependen del umbral, así
@@ -104,7 +104,8 @@ def load_class(profile: str, config, rm, tm, symbols, tfs, years: float):
 
 def main():
     ap = argparse.ArgumentParser(description="Calibra un perfil de clase con walk-forward.")
-    ap.add_argument("profile", help="forex_swing | forex_scalping | metals_swing | … (dashboard/profiles)")
+    ap.add_argument("profile", help="perfil del panel (xauusd_swing | xauusd_scalping) o un bot (xauusd_scalping_bot)")
+    ap.add_argument("--tfs", default=None, help="TF a probar separados por comas (por defecto, según el modo)")
     ap.add_argument("--years", type=float, default=3.0)
     ap.add_argument("--write", action="store_true", help="escribir los parámetros elegidos en el config del perfil")
     a = ap.parse_args()
@@ -113,17 +114,19 @@ def main():
     cfg_path = bt.profile_dir(a.profile) / "config.py"
     config, _ = bt.load_engine(a.profile, "H1" if "swing" in a.profile else "M15")
     from bot_engine import risk_manager as rm, trade_manager as tm
-    symbols = [s for group in config.SECTIONS.values() for s in group]
+    symbols = [s for group in getattr(config, "SECTIONS", {"": [config.SYMBOL]}).values() for s in group]
     current_tf = next(k for k in bt.TF_MIN if getattr(mt5, f"TIMEFRAME_{k}", None) == config.PRIMARY_TF)
     base = {"tf": current_tf, "thr": float(config.MIN_SIGNAL_SCORE),
             "macro_sell": bool(getattr(config, "REQUIRE_MACRO_FOR_SELL", False)), "combo": bt.COMBOS[0]}
-    print(f"Calibrando {a.profile}: {symbols} | actual: {base}", flush=True)
+    mode = getattr(config, "MODE", "scalping" if bt.TF_MIN[current_tf] < 60 else "swing")   # un bot no trae MODE
+    tfs = a.tfs.split(",") if a.tfs else TFS_BY_MODE[mode]
+    print(f"Calibrando {a.profile}: {symbols} {tfs} | actual: {base}", flush=True)
 
-    data = load_class(a.profile, config, rm, tm, symbols, TFS_BY_MODE[config.MODE], a.years)
+    data = load_class(a.profile, config, rm, tm, symbols, tfs, a.years)
     if not data:
         sys.exit("Sin datos para calibrar.")
     grid = [{"tf": tf, "thr": thr, "macro_sell": ms, "combo": c}
-            for tf in TFS_BY_MODE[config.MODE] for thr in THRESHOLDS for ms in (False, True) for c in bt.COMBOS]
+            for tf in tfs for thr in THRESHOLDS for ms in (False, True) for c in bt.COMBOS]
 
     def trades(params, lo, hi, train: bool):
         """R de las operaciones de la clase con esos parámetros, decididas en [lo, hi)."""

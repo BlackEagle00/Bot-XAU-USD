@@ -566,8 +566,11 @@ def generate_signal(
     # vender con RSI sobrevendido = "vender en el suelo"; comprar con RSI
     # sobrecomprado = "comprar en el techo". Justo lo que castiga al apilar trades
     # de tendencia hasta el final del movimiento (rebote → todas tocan SL).
+    # Grid en régimen de RANGO (GRID_REGIME="range"): la cesta promedia contra el movimiento, así que
+    # se abre cuando NO hay tendencia fuerte (ADX bajo) y los extremos de RSI dejan de ser un veto.
+    range_regime = getattr(_cfg, "GRID_REGIME", "trend") == "range"
     rsi_now = ind_primary.get("rsi")
-    if rsi_now is not None and action != "HOLD":
+    if rsi_now is not None and action != "HOLD" and not range_regime:
         if action == "SELL" and rsi_now <= RSI_NO_SELL_BELOW:
             reasons.append(
                 f"⛔ SELL bloqueado: RSI {rsi_now:.0f} sobrevendido (posible suelo, no vender el fondo)"
@@ -583,7 +586,12 @@ def generate_signal(
     # El bot es seguidor de tendencia: en mercado lateral (ADX bajo) los cruces son
     # ruido y suelen terminar en SL. Si la tendencia no tiene fuerza, no abrimos.
     adx_now = ind_primary.get("adx")
-    if USE_ADX_FILTER and adx_now is not None and action != "HOLD":
+    if range_regime and adx_now is not None and action != "HOLD":
+        if adx_now > getattr(_cfg, "GRID_ADX_MAX", 25):
+            reasons.append(f"⛔ {action} bloqueado: ADX {adx_now:.0f} > {getattr(_cfg, 'GRID_ADX_MAX', 25)} "
+                           f"(tendencia fuerte: la cesta promediaría contra ella)")
+            action = "HOLD"
+    elif USE_ADX_FILTER and adx_now is not None and action != "HOLD":
         if adx_now < ADX_MIN_TREND:
             reasons.append(
                 f"⛔ {action} bloqueado: ADX {adx_now:.0f} < {ADX_MIN_TREND} "
@@ -625,6 +633,7 @@ def generate_signal(
     return {
         "action":    action,
         "score":     round(total, 4),
+        "raw_score": total,          # sin redondear: el backtest aplica umbrales después con el mismo ≥ del motor
         "reasons":   reasons,
         "atr":       atr,
         "trend":     trend,

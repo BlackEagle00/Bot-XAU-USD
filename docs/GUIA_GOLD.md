@@ -5,8 +5,8 @@ Guía completa de los **dos bots del oro**: `xauusd_bot/` (**swing**) y `xauusd_
 necesita, y el detalle de su proceso interno y sus valores afinados.
 
 > El motor de ambos es el mismo código copiado; cambian las **temporalidades**, los **valores**
-> y un detalle clave del oro: el **filtro macro** (ver más abajo). Para EUR/USD, mira
-> [GUIA_EURUSD.md](GUIA_EURUSD.md).
+> y un detalle clave del oro: el **filtro macro** (ver más abajo). El tercer bot, **scalping + grid +
+> cesta** (`python run.py oro_grid`), se explica en el README.
 
 ---
 
@@ -32,7 +32,7 @@ necesita, y el detalle de su proceso interno y sus valores afinados.
 | Windows 10/11 | La API de Python de MT5 solo corre en Windows |
 | Python 3.9+ | Lenguaje del bot |
 | **Terminal MetaTrader 5 abierto y con sesión iniciada** | El bot se conecta al MT5 que ya tienes corriendo |
-| `pip install -r xauusd_bot/requirements.txt` | Dependencias (las mismas para los 4 bots) |
+| `pip install -r xauusd_bot/requirements.txt` | Dependencias (las mismas para los 3 bots) |
 | Archivo `.env` en la raíz | Credenciales MT5 y (opcional) Telegram — ver [README](../README.md) |
 
 **Lanzar el bot:**
@@ -51,7 +51,7 @@ Detener con **Ctrl+C**: termina el ciclo actual y se desconecta limpio. **Las po
 abiertas no se cierran** al apagar. Si cambias algo en `config.py`, **reinicia el bot**
 (tiene el config viejo en memoria hasta que lo relanzas).
 
-> 💡 Pueden correr **a la vez** (incluso junto a los de EUR/USD): cada uno solo gestiona los
+> 💡 Pueden correr **a la vez** (incluido el bot grid): cada uno solo gestiona los
 > trades con su propio Magic, así que no se pisan.
 
 ---
@@ -149,9 +149,8 @@ nuevas; nunca cierran una posición abierta.**
 | **Macro (exclusivo del oro)** | **D1 con VETO** | H1 solo sesgo | Swing: si el **diario** marca tendencia fuerte (EMAs en cascada), **veta** operar en contra. Scalp: el H1 solo inclina el score, **sin veto**. |
 | Noticias de alto impacto | ±30 min (USD) | ±15 min (USD) | No abre alrededor de NFP/CPI/FOMC, etc. |
 
-> 🟡 **La diferencia clave del oro frente al EUR/USD** es el **filtro macro**: el oro swing
-> respeta el gráfico diario con veto duro; el scalp solo lo usa como empujón suave. Los bots
-> de EUR/USD **no tienen** este filtro.
+> 🟡 **La diferencia clave del oro** es el **filtro macro**: el oro swing respeta el gráfico
+> diario con veto duro; el scalp (y el grid, que usa su misma señal) solo lo usa como empujón suave.
 
 ---
 
@@ -193,8 +192,8 @@ pérdida máxima sigue siendo ~1%.
 
 | Parámetro | Oro swing | Oro scalp |
 |---|---|---|
-| `PRIMARY_TF` / `TREND_TF` / `HIGHER_TF` | H1 / H4 / D1 | M5 / M15 / H1 |
-| `LOOP_INTERVAL` | 60 s | 15 s |
+| `PRIMARY_TF` / `TREND_TF` / `HIGHER_TF` | H1 / H4 / D1 | M15 / H1 / H4 |
+| `LOOP_INTERVAL` | 30 s | 15 s |
 | `MIN_SIGNAL_SCORE` | 5.0 | 5.5 |
 | `SL_ATR_MULT` / `TP_ATR_MULT` | 2.0 / 4.5 | 1.5 / 3.0 |
 | `MIN_RR` | 2.0 | 1.8 |

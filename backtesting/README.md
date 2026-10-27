@@ -56,6 +56,26 @@ Veredicto: **Rentable** (PF ≥ 1,2, expectativa > 0 y ≥ 2/3 de los años posi
 > ~17 meses. Para 3 años completos sube ese valor a Ilimitado en MT5 (Herramientas → Opciones → Gráficos)
 > y corre con `--refresh`.
 
+## Grid y suite XAUUSD (`xau_suite.py`)
+
+Con un config `USE_GRID=True`, `engine_backtest.py` no usa la triple barrera. Corre `simulate_grid`
+(cesta vela a vela, en orden conservador) y reporta en la clave `"grid"`, por variante de `--sweep` y
+por balance: métricas, `basket` (cestas, % ganadoras, peor cesta, salidas), `basket_split` (IS/OOS) y
+`mc` sobre el retorno por cesta.
+
+```bash
+python backtesting/xau_suite.py                # scalping M1/M5/M15/H1 · swing H1/H4 · grid M1/M5/M15/H1
+python backtesting/xau_suite.py --summary      # rehace reports/xau_suite.md con los reportes existentes
+python backtesting/engine_backtest.py xauusd_scalping_bot M15 --end 2026-10-16   # repetir un periodo (regresión)
+```
+
+- **Análisis por operación** (todos los bots): minutos por operación, resultado por sesión (UTC),
+  días hasta duplicar y `split` in-sample (60 %) / fuera de muestra (40 %).
+- **Elección de la variante del grid.** Se hace solo con el IS (≥ 30 cestas, 1 000 USD). El OOS es el
+  resultado.
+- **M1.** Por defecto MT5 guarda ~100 000 velas de 1 minuto (~3 meses), así que la suite usa
+  `--years 0.27`.
+
 ## Calibración por clase (`calibrate.py`)
 
 ```bash

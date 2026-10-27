@@ -29,7 +29,7 @@ cp .env.example .env          # rellenar; MT5_LOGIN=0 usa la cuenta ya abierta e
 ## Ejecutar
 
 ```bash
-python run.py oro | oro_scalping | eurusd | eurusd_scalping    # un bot
+python run.py oro | oro_scalping | oro_grid                       # un bot
 python run.py dashboard                                        # panel → http://127.0.0.1:8765
 python dashboard/server.py --no-browser                        # panel sin abrir el navegador
 ```

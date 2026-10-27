@@ -5,8 +5,6 @@ Uso:
     python run.py                  # menú interactivo
     python run.py oro              # ejecuta directo el bot de Oro (swing H4/D1/W1)
     python run.py oro_scalping     # ejecuta directo el bot de Oro (scalping M15/H1/H4)
-    python run.py eurusd           # ejecuta directo el bot de EUR/USD (swing H1/H4/D1)
-    python run.py eurusd_scalping  # ejecuta directo el bot de EUR/USD (scalping M5/M15/H1)
     python run.py dashboard        # panel web local (http://127.0.0.1:8765)
 """
 import subprocess
@@ -16,10 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 BOTS = {
-    "oro":              ("Oro (XAUUSD / GOLD) — swing H4/D1/W1",    ROOT / "xauusd_bot"),
+    "oro":              ("Oro (XAUUSD / GOLD) — swing H4/D1/W1",      ROOT / "xauusd_bot"),
     "oro_scalping":     ("Oro (XAUUSD / GOLD) — scalping M15/H1/H4", ROOT / "xauusd_scalping_bot"),
-    "eurusd":           ("EUR/USD — swing H1/H4/D1",                ROOT / "eurusd_bot"),
-    "eurusd_scalping":  ("EUR/USD — scalping M5/M15/H1",            ROOT / "eurusd_scalping_bot"),
 }
 
 
