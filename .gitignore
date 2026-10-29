@@ -51,3 +51,7 @@ backtesting/reports/
 
 # Modelos del filtro predictivo (generados por engine_backtest.py --ml)
 models/
+
+# Estado persistente y diario de eventos de cada bot (bot_engine/coordinator.py, journal.py)
+**/state/
+**/journal.jsonl

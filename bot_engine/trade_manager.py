@@ -16,12 +16,14 @@ Notas de compatibilidad MT5:
   • trade_stops_level: distancia mínima en puntos para SL/TP (algunos brokers = 0)
   • Comentarios de orden: MT5 limita a 31 caracteres
 """
+import time
 import MetaTrader5 as mt5
 from typing import Optional
 
 from .logger_config import logger
+from . import coordinator, journal
 from config import (
-    SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE, ORDER_COMMENT_PREFIX,
+    SYMBOL, MAGIC_NUMBER, MAX_SLIPPAGE, ORDER_COMMENT_PREFIX, MAX_SPREAD_POINTS,
     USE_TRAILING_STOP, USE_BREAKEVEN, USE_ANTI_DUPLICATE,
     BREAKEVEN_ATR_MULT, TRAILING_ATR_MULT,
     BE_TRIGGER_PCT, BE_PLUS_POINTS,
@@ -86,6 +88,11 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
     if tick is None:
         logger.error("No se pudo obtener tick para abrir trade.")
         return None
+    pts = (tick.ask - tick.bid) / symbol_info.point
+    if pts >= MAX_SPREAD_POINTS:                    # el ciclo lo revisó antes; esto es el tick real del envío
+        logger.warning(f"SIGNAL_BLOCKED: Spread abuse detected ({pts:.0f} pts ≥ {MAX_SPREAD_POINTS}) — {action} no enviado")
+        journal.log("rejected", stage="spread", action=action, spread_pts=round(pts))
+        return None
 
     if action == "BUY":
         order_type = mt5.ORDER_TYPE_BUY
@@ -112,35 +119,105 @@ def open_trade(action: str, sl: float, tp: float, lot: float,
         "type_filling": filling,
     }
 
+    # 1. Pre-chequeo del servidor (margen, volumen, stops, precio): si no pasa, no se envía
+    check = mt5.order_check(request)
+    if check is None or check.retcode not in (0, mt5.TRADE_RETCODE_DONE):
+        why = f"{check.retcode} {check.comment}" if check else f"None {mt5.last_error()}"
+        logger.error(f"❌ order_check rechazó {action} {symbol} {lot}: {why}")
+        journal.log("refused", stage="order_check", action=action, lot=lot, retcode=getattr(check, "retcode", None),
+                    comment=getattr(check, "comment", str(mt5.last_error())))
+        coordinator.record_order(False)
+        return None
+
+    journal.log("sent", action=action, lot=lot, price=request["price"], sl=request["sl"], tp=request["tp"])
+    before = {p.ticket for p in (mt5.positions_get(symbol=symbol) or []) if p.magic == MAGIC_NUMBER}
+    t0 = time.monotonic()
     result = mt5.order_send(request)
 
-    # Fallback: si el filling mode fue rechazado, probar con RETURN
+    # Fallback: si el filling mode fue rechazado, probar con RETURN (rechazo explícito: no es un reenvío a ciegas)
     if result and result.retcode == mt5.TRADE_RETCODE_INVALID_FILL:
         logger.debug(f"Filling {filling} rechazado. Reintentando con ORDER_FILLING_RETURN...")
         request["type_filling"] = mt5.ORDER_FILLING_RETURN
         result = mt5.order_send(request)
+    latency_ms = round((time.monotonic() - t0) * 1000)
 
+    # 2. Sin respuesta: NO reenviar; ver si el servidor la ejecutó igual
     if result is None:
-        logger.error(f"order_send retornó None: {mt5.last_error()}")
+        logger.error(f"order_send retornó None: {mt5.last_error()}. Conciliando sin reenviar…")
+        pos = _find_new_position(symbol, before)
+        if pos is None:
+            journal.log("unknown", action=action, lot=lot, latency_ms=latency_ms, error=str(mt5.last_error()))
+            coordinator.trip(f"resultado de orden desconocido ({action} {lot}); revisa MT5 antes de reiniciar")
+            return None
+        ticket = pos.identifier
+    elif result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_DONE_PARTIAL):
+        ticket = result.order
+        pos = _find_new_position(symbol, before, order=result.order)
+    else:
+        logger.error(
+            f"❌ Error abriendo {action} | retcode: {result.retcode} | "
+            f"Descripción: {result.comment} | Último error: {mt5.last_error()}"
+        )
+        journal.log("refused", stage="order_send", action=action, lot=lot, retcode=result.retcode,
+                    comment=result.comment, latency_ms=latency_ms)
+        coordinator.record_order(False)
         return None
 
-    if result.retcode == mt5.TRADE_RETCODE_DONE:
-        logger.info(
-            f"✅ {action} {symbol} abierto | Ticket: #{result.order} | Lote: {lot} | "
-            f"Entry: {exec_price:.{digits}f} | SL: {sl:.{digits}f} | TP: {tp:.{digits}f}"
-        )
-        play_trade_sound("alert.wav")
-        notify(
-            f"🟢 {action} abierto #{result.order} {symbol} | Lote {lot} | "
-            f"Entry {exec_price:.{digits}f} | SL {sl:.{digits}f} | TP {tp:.{digits}f}"
-        )
-        return result.order
-
-    logger.error(
-        f"❌ Error abriendo {action} | retcode: {result.retcode} | "
-        f"Descripción: {result.comment} | Último error: {mt5.last_error()}"
+    # 3. Ejecución confirmada: precio real, slippage y protección (SL/TP) verificada en la posición
+    coordinator.record_order(True)
+    fill = pos.price_open if pos else (getattr(result, "price", 0) or exec_price)
+    slip_pts = round((fill - exec_price if action == "BUY" else exec_price - fill) / symbol_info.point)
+    vol = pos.volume if pos else getattr(result, "volume", lot)
+    logger.info(
+        f"✅ {action} {symbol} abierto | Ticket: #{ticket} | Lote: {vol} | "
+        f"Entry: {fill:.{digits}f} (pedido {exec_price:.{digits}f}, slippage {slip_pts:+d} pts, {latency_ms} ms) | "
+        f"SL: {sl:.{digits}f} | TP: {tp:.{digits}f}"
     )
-    return None
+    if slip_pts > MAX_SLIPPAGE:
+        logger.warning(f"⚠ Slippage {slip_pts} pts > tolerancia {MAX_SLIPPAGE}")
+    journal.log("filled", action=action, ticket=ticket, lot=vol, requested=exec_price, price=fill,
+                slippage_pts=slip_pts, latency_ms=latency_ms, partial=vol < lot)
+    _ensure_protected(pos, sl, tp, symbol_info, symbol)
+    play_trade_sound("alert.wav")
+    notify(
+        f"🟢 {action} abierto #{ticket} {symbol} | Lote {vol} | "
+        f"Entry {fill:.{digits}f} | SL {sl:.{digits}f} | TP {tp:.{digits}f}"
+    )
+    return ticket
+
+
+def _find_new_position(symbol: str, before: set, order: int = None, wait: float = 3.0):
+    """La posición que abrió esta orden, buscada en el bróker (magic propio).
+    Sin respuesta (order=None) solo vale un ticket que no existía antes de enviar; con orden confirmada
+    y cuenta netting (el fill se suma a la posición propia que ya había) vale la propia más reciente."""
+    end = time.monotonic() + wait
+    while True:
+        mine = [p for p in (mt5.positions_get(symbol=symbol) or []) if p.magic == MAGIC_NUMBER]
+        hit = ([p for p in mine if order in (p.ticket, p.identifier)] if order else []) or \
+              [p for p in mine if p.ticket not in before]
+        if hit:
+            return max(hit, key=lambda p: p.time_msc)
+        if time.monotonic() >= end:
+            return max(mine, key=lambda p: p.time_msc) if order and mine else None
+        time.sleep(0.5)
+
+
+def _ensure_protected(pos, sl: float, tp: float, symbol_info, symbol: str) -> None:
+    """Una posición sin SL confirmado no cuenta como protegida: se repone el SL y, si no se puede, se cierra."""
+    if pos is None:
+        coordinator.trip("orden ejecutada pero la posición no aparece en el bróker; revisa MT5")
+        return
+    if pos.sl:
+        journal.log("protected", ticket=pos.ticket, sl=pos.sl, tp=pos.tp)
+        return
+    logger.error(f"⚠ #{pos.ticket} quedó SIN stop-loss: reponiéndolo…")
+    if _modify_sl(pos.ticket, sl, tp, symbol_info.digits, symbol) and \
+            any(p.sl for p in (mt5.positions_get(ticket=pos.ticket) or [])):
+        journal.log("protected", ticket=pos.ticket, sl=sl, tp=tp, repaired=True)
+        return
+    closed = close_trade(pos.ticket, symbol_info)
+    journal.log("unprotected", ticket=pos.ticket, closed=closed)
+    coordinator.trip(f"#{pos.ticket} sin stop-loss y no se pudo reponer ({'cerrada' if closed else 'NO se pudo cerrar'})")
 
 
 def place_pending(action: str, price: float, lot: float, sl: float, tp: float,
@@ -271,7 +348,7 @@ def close_all_trades(symbol_info) -> int:
 # MODIFICAR SL / TP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _modify_sl(ticket: int, new_sl: float, current_tp: float, digits: int) -> bool:
+def _modify_sl(ticket: int, new_sl: float, current_tp: float, digits: int, symbol: str = None) -> bool:
     """
     Modifica solo el SL de una posición (mantiene el TP).
     Usa TRADE_ACTION_SLTP que no requiere precio de ejecución.
@@ -279,7 +356,7 @@ def _modify_sl(ticket: int, new_sl: float, current_tp: float, digits: int) -> bo
     request = {
         "action":   mt5.TRADE_ACTION_SLTP,
         "position": ticket,
-        "symbol":   SYMBOL,
+        "symbol":   symbol or SYMBOL,
         "sl":       round(new_sl, digits),
         "tp":       round(current_tp, digits),
     }

@@ -204,7 +204,7 @@ overrides existing env vars) — handy to test on the demo already open in the t
 queries (`copy_ticks_range`, `history_deals_get`) — use `data_handler.server_now()`. The trading "day"
 (daily P&L, daily-loss latch) is the broker server's day.
 
-`SYMBOL` may need adjusting per broker (`XAUUSD`, `GOLD`, `XAUUSDm`, etc.) — see `docs/GUIA_BROKERS_COLOMBIA.md`
+`SYMBOL` is the canonical `"XAUUSD"` (+ `SYMBOL_ALIASES=("GOLD",)`); since 2026-10-28 `bot_engine/symbols.resolve_symbol` maps it to the broker's name at launch (each `main.py` and `dashboard/worker.py`, before importing the engine): exact tradable name wins, else the tradable symbol containing it with the lowest spread (crosses like `XAUEUR`/`BTCXAU` excluded) — `XAUUSD-ECN` on the user's live broker. Set an exact name to force it. See `docs/GUIA_BROKERS_COLOMBIA.md`
 and `docs/MIGRACION_A_XM.md` for broker-specific notes (this project has been evaluated against ICMarkets,
 Pepperstone, XM, FP Markets). Account currently in use is a **MetaQuotes-Demo** account (~105 USD,
 Micro tier), where gold is `SYMBOL="XAUUSD"` (on XM it was `GOLD`).
@@ -340,6 +340,20 @@ flow:
    Anti-duplicate logic (`is_too_close_to_existing`) prevents stacking trades within
    `ANTI_DUP_ATR_MULT × ATR` of an existing position in the same direction (was a hardcoded `0.5×ATR`;
    now per-bot config — swing 1.0, scalping 0.75 — to stop laddering many correlated entries into one leg).
+
+**Execution controls (2026-10-27, `docs/SISTEMA_2026-10.md`):** `bot_engine/coordinator.py` gives each bot a
+single-instance lock, a broker-derived state (`IDLE` / `<ENGINE>_ACTIVE` / `DRAINING` when any other magic has a
+position or order on the symbol / `SAFE_MODE`), persistent `<bot>/state/state.json` (last traded bar, DD peak and
+cut, daily-cut day, order fails, breaker) and `entry_gate()` (terminal connected + Algo Trading on + same account +
+fresh tick), checked in `_run_cycle` before any entry. `open_trade` runs `order_check` first, never resends after a
+`None` result (it reconciles by magic and trips `SAFE_MODE` if nothing appeared), accepts `DONE_PARTIAL`, and
+verifies the SL on the position (repairs it or closes it). Every decision goes to `<bot>/journal.jsonl`
+(`bot_engine/journal.py`). Tests redirect `co.STATE_DIR`/`journal.PATH` to a temp dir.
+**Regime filter (stage 3):** `SKIP_REGIMES` (scalping: `("tendencia/baja",)`) blocks entries whose regime
+(`indicators.regime_labels`, ADX × ATR% tercile over the previous 2 000 bars) is listed; `core._regime_now()` and the
+backtest use the same function (live/backtest parity tested). `TREND_FAMILY_CAP` and `VWAP_SESSION` are experiments,
+off. Backtest costs: `BT_COMMISSION_PER_LOT` (6.0 real), `BT_SLIPPAGE_POINTS`, `BT_SWAP_*_POINTS`; frozen baseline in
+`backtesting/baselines/`.
 
 `core._try_open_trade()` is the orchestration glue for step 6→7: **`in_news_blackout()`** (high-impact
 news gate) → `can_open_trade()` → `is_too_close_to_existing()` → `calculate_sl_tp()` → `calculate_lot()` →

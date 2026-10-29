@@ -18,9 +18,14 @@ os.chdir(tempfile.gettempdir())                          # el logger crea su .lo
 
 import MetaTrader5 as mt5
 from bot_engine import data_handler as dh, risk_manager as rm, trade_manager as tm
+from bot_engine import coordinator as co, journal
+
+_TMP = Path(tempfile.mkdtemp(prefix="bot_test_"))
+co.STATE_DIR, journal.PATH = _TMP / "state", _TMP / "journal.jsonl"   # el estado y el diario de prueba no tocan los del bot
 
 rm._cfg.ENFORCE_CAPITAL_LEVEL = True   # las pruebas miden el bloqueo; el modo informativo tiene su propia prueba
 rm._cfg.DAILY_LOSS_ALERT_ONLY = False  # ídem: el corte diario; el modo alerta (scalping) tiene su propia prueba
+rm.MAX_OPEN_TRADES = 3                 # las pruebas de niveles asumen 3; la cuenta real usa 1 (config 2026-10-27)
 
 SYM = NS(trade_tick_size=0.01, trade_tick_value=1.0, volume_step=0.01,
          volume_min=0.01, volume_max=100.0, digits=2, point=0.01, trade_stops_level=0)
@@ -42,7 +47,8 @@ def test_small_account_trades_min_lot_up_to_5pct_risk():
 
 
 def test_micro_account_fits_sl_to_trade_from_50_usd():
-    keys = {"MICRO_SL_FIT": True, "MAX_RISK_MIN_LOT": 0.10, "MICRO_MIN_SL_ATR": 0.5}   # el mecanismo, no el config
+    keys = {"MICRO_SL_FIT": True, "MAX_RISK_MIN_LOT": 0.10, "MICRO_MIN_SL_ATR": 0.5,   # el mecanismo, no el config
+            "MIN_LOT_CAP_HARD": False}
     real = {k: getattr(rm._cfg, k, None) for k in keys}
     vars(rm._cfg).update(keys)
     try:
@@ -79,6 +85,8 @@ def _small_account_checks():
 
 def test_capital_level_informative_trades_min_lot_without_tier_limits():
     rm._cfg.ENFORCE_CAPITAL_LEVEL = False
+    hard = getattr(rm._cfg, "MIN_LOT_CAP_HARD", False)
+    rm._cfg.MIN_LOT_CAP_HARD = False
     try:
         lot, need = rm.lot_plan(NS(balance=50, equity=50), SYM, 64.0)    # stop swing ≈ 64 USD con 50 USD
         assert lot == 0.01 and abs(need - 6400) < 1e-6                  # opera al mínimo; 1 % con ≥ 6 400
@@ -94,6 +102,73 @@ def test_capital_level_informative_trades_min_lot_without_tier_limits():
         assert grid.build_basket("BUY", 4000.0, 20.0, 50.0, SYM, 100.0, cfg) is None
     finally:
         rm._cfg.ENFORCE_CAPITAL_LEVEL = True
+        rm._cfg.MIN_LOT_CAP_HARD = hard
+
+
+def test_min_lot_hard_cap_rejects_without_tier_limits():
+    saved = rm._cfg.ENFORCE_CAPITAL_LEVEL, getattr(rm._cfg, "MIN_LOT_CAP_HARD", False), rm._cfg.MAX_RISK_MIN_LOT
+    rm._cfg.ENFORCE_CAPITAL_LEVEL, rm._cfg.MIN_LOT_CAP_HARD, rm._cfg.MAX_RISK_MIN_LOT = False, True, 0.15
+    try:
+        acc = NS(balance=57.72, equity=57.72)
+        assert rm.lot_plan(acc, SYM, 17.7)[0] == 0.0          # SL 17.7 USD = 31 % > 15 % → TRADE_REJECTED
+        assert rm.lot_plan(acc, SYM, 7.5)[0] == 0.01          # SL 7.5 USD = 13 % → entra al mínimo
+        assert rm.capital_tier(57.72)["daily_loss"] == rm.MAX_DAILY_LOSS_PCT   # sin niveles de cuenta
+    finally:
+        rm._cfg.ENFORCE_CAPITAL_LEVEL, rm._cfg.MIN_LOT_CAP_HARD, rm._cfg.MAX_RISK_MIN_LOT = saved
+
+
+def test_open_trade_blocks_spread_abuse_at_send():
+    saved = mt5.order_send, tm.get_tick
+    sent = []
+    mt5.order_send = lambda req: sent.append(req)
+    tm.get_tick = lambda *a, **k: NS(ask=4000.45, bid=4000.0)                # 45 pts ≥ MAX_SPREAD_POINTS (40)
+    try:
+        assert tm.open_trade("BUY", 3990.0, 4020.0, 0.01, SYM) is None and not sent
+    finally:
+        mt5.order_send, tm.get_tick = saved
+
+
+def test_anomalous_m1_bar_uses_only_past_bars():
+    import numpy as np
+    from bot_engine.indicators import anomalous_bars
+    h, l = np.full(40, 1.0), np.zeros(40)
+    h[30], h[35] = 4.0, 2.0                                                  # 4× y 2× la media de 20
+    f = anomalous_bars(h, l, 3.0, 20)
+    assert list(np.where(f)[0]) == [30]
+    h2 = h.copy(); h2[38] = 50.0                                             # cambiar el futuro…
+    assert (anomalous_bars(h2, l, 3.0, 20)[:38] == f[:38]).all()             # …no cambia el pasado
+
+
+def test_sim_parallel_never_sends_orders_and_sizes_per_balance():
+    import importlib
+    keep = {f: getattr(mt5, f, None) for f in ("order_send", "order_check", "order_send_async", "positions_get")}
+    hard = getattr(rm._cfg, "MIN_LOT_CAP_HARD", False)
+    sys.path.insert(0, str(ROOT / "sim_parallel"))
+    try:
+        sp = importlib.import_module("sim_parallel")
+        for f in keep:                                                       # el módulo anula las órdenes al importarse
+            try:
+                getattr(mt5, f)()
+                raise AssertionError(f"{f} no está anulada")
+            except RuntimeError:
+                pass
+        rm._cfg.MIN_LOT_CAP_HARD = True
+        vt = {"spread_multiplier": 1.0, "fixed_spread_offset_points": 0}
+        d = sp.decide(100, vt, "BUY", 4000.0, 4000.10, 11.8, SYM)            # SL 17.7 > 15 % de 100
+        assert d["estado"] == "TRADE_REJECTED" and d["lot"] == 0
+        d = sp.decide(5000, vt, "SELL", 4000.0, 4000.10, 20 / 3, SYM)        # SL 10 → 1 % de 5 000 = 0.05 lote
+        assert d["estado"] == "EJECUTADA" and d["lot"] == 0.05 and d["entry"] == 4000.0
+        d = sp.decide(5000, {"spread_multiplier": 5.0}, "BUY", 4000.0, 4000.10, 10, SYM)   # 10 pts × 5 = 50 ≥ 40
+        assert d["estado"] == "SIGNAL_BLOCKED"
+        pos = {"side": "BUY", "entry": 100.0, "sl": 99.0, "tp": 102.0, "t0": 0}
+        assert sp.walk(pos, [(0, 100.5, 99.5, 100, 10), (60, 103, 98.5, 101, 10)], 0.01, vt, 7200)[:2] == (99.0, "SL")
+        assert sp.walk(pos, [(0, 100.5, 99.5, 100.2, 10)], 0.01, vt, 60)[:2] == (100.2, "TIEMPO")
+        sell = {"side": "SELL", "entry": 100.0, "sl": 101.0, "tp": 98.0, "t0": 0}
+        assert sp.walk(sell, [(0, 100.95, 99.5, 100, 10)], 0.01, vt, 7200)[:2] == (101.0, "SL")   # ASK = high + spread
+    finally:
+        for f, v in keep.items():
+            setattr(mt5, f, v) if v else delattr(mt5, f)
+        rm._cfg.MIN_LOT_CAP_HARD = hard
 
 
 def test_account_daily_loss_blocks_all_bots():
@@ -230,8 +305,11 @@ def test_open_trade_plays_sound_only_on_success():
     import winsound
     played, saved = [], (winsound.PlaySound, mt5.order_send, tm.get_tick, tm.notify)
     winsound.PlaySound = lambda *a: played.append(a)
-    tm.get_tick = lambda *a, **k: NS(ask=4000.5, bid=4000.0)
+    tm.get_tick = lambda *a, **k: NS(ask=4000.1, bid=4000.0)
     tm.notify = lambda *a, **k: None
+    _fresh_co()
+    restore = _mt5(order_check=lambda r: NS(retcode=0, comment="Done"),
+                   positions_get=lambda **k: [_pos(7, sl=3990.0)])
     try:
         mt5.order_send = lambda req: NS(retcode=mt5.TRADE_RETCODE_DONE, order=7, comment="")
         assert tm.open_trade("BUY", 3990.0, 4020.0, 0.01, SYM) == 7 and len(played) == 1
@@ -239,6 +317,8 @@ def test_open_trade_plays_sound_only_on_success():
         assert tm.open_trade("SELL", 4010.0, 3980.0, 0.01, SYM) is None and len(played) == 1
     finally:
         winsound.PlaySound, mt5.order_send, tm.get_tick, tm.notify = saved
+        restore()
+        _fresh_co()
 
 
 def test_closed_position_plays_sound_even_without_telegram():
@@ -680,9 +760,10 @@ def test_grid_exec_tf_maps_signal_to_next_short_bar():
 
 def test_ml_filter_off_from_capital_threshold():
     from bot_engine import core
-    saved = (core.ml_filter.bundle_for, core.get_account_info, getattr(core._cfg, "ML_FILTER_MAX_CAPITAL", None))
+    saved = (core.ml_filter.bundle_for, core.get_account_info, getattr(core._cfg, "ML_FILTER_MAX_CAPITAL", None),
+             getattr(core._cfg, "USE_ML_FILTER", False))
     core.ml_filter.bundle_for = lambda s: {"tau": 0.6}
-    core._cfg.ML_FILTER_MAX_CAPITAL = 500
+    core._cfg.ML_FILTER_MAX_CAPITAL, core._cfg.USE_ML_FILTER = 500, True
     try:
         core.get_account_info = lambda: NS(balance=100, equity=100)
         assert core._ml_bundle() == {"tau": 0.6}                          # cuenta chica: con filtro
@@ -690,8 +771,15 @@ def test_ml_filter_off_from_capital_threshold():
         assert core._ml_bundle() == {"tau": 0.6}                          # capital = min(balance, equity) < 500
         core.get_account_info = lambda: NS(balance=600, equity=600)
         assert core._ml_bundle() is None                                  # ≥ 500: sin filtro
+        core.ml_filter.bundle_for = lambda s: None                        # modelo ausente o inválido
+        assert core._ml_bundle() is None                                  # ≥ 500 no lo necesita
+        core.get_account_info = lambda: NS(balance=100, equity=100)
+        assert core._ml_bundle() is False                                 # lo necesita y falta: bloquea (fail-closed)
+        core._cfg.USE_ML_FILTER = False
+        assert core._ml_bundle() is None                                  # filtro apagado: opera sin él
     finally:
-        core.ml_filter.bundle_for, core.get_account_info, core._cfg.ML_FILTER_MAX_CAPITAL = saved
+        (core.ml_filter.bundle_for, core.get_account_info, core._cfg.ML_FILTER_MAX_CAPITAL,
+         core._cfg.USE_ML_FILTER) = saved
 
 
 def test_trade_entry_once_per_signal_bar_inside_window():
@@ -789,15 +877,6 @@ def test_grid_range_regime_inverts_adx_and_rsi_gates():
         del config.GRID_REGIME
 
 
-def test_server_now_is_utc_aware():
-    real = dh.mt5
-    dh.mt5 = NS(symbol_info_tick=lambda s: NS(time=1_760_000_000))
-    try:
-        assert dh.server_now() == datetime.fromtimestamp(1_760_000_000, tz=timezone.utc)
-    finally:
-        dh.mt5 = real
-
-
 
 def test_test_runner_levels_25_50_pips():
     import importlib.util
@@ -807,6 +886,376 @@ def test_test_runner_levels_25_50_pips():
     assert (round(sl, 2), round(tp, 2)) == (1997.50, 2005.00)                 # 250 / 500 puntos
     sl, tp = tr.levels("SELL", 2000.00, 0.01)
     assert (round(sl, 2), round(tp, 2)) == (2002.50, 1995.00)
+
+
+def test_get_tick_rejects_zero_price():
+    real = dh.mt5
+    try:
+        dh.mt5 = NS(symbol_info_tick=lambda s: NS(bid=0.0, ask=0.0, time=0))
+        assert dh.get_tick("XAUUSD") is None
+        dh.mt5 = NS(symbol_info_tick=lambda s: NS(bid=4000.0, ask=4000.3, time=1))
+        assert dh.get_tick("XAUUSD").ask == 4000.3
+    finally:
+        dh.mt5 = real
+
+def test_server_now_is_utc_aware():
+    real = dh.mt5
+    dh.mt5 = NS(symbol_info_tick=lambda s: NS(time=1_760_000_000))
+    try:
+        assert dh.server_now() == datetime.fromtimestamp(1_760_000_000, tz=timezone.utc)
+    finally:
+        dh.mt5 = real
+
+
+# ─── Coordinador, estado persistente y envío verificado (2026-10-27) ──────────
+# Los mocks reproducen lo que documenta la API de MT5; no equivalen al servidor real del bróker.
+
+def _mt5(**fns):
+    """Sustituye funciones de mt5; devuelve la función que las restaura."""
+    saved = {k: getattr(mt5, k) for k in fns}
+    vars(mt5).update(fns)
+    return lambda: vars(mt5).update(saved)
+
+
+def _pos(ticket, magic=None, sl=0.0, tp=0.0, price=4000.5, volume=0.01):
+    return NS(ticket=ticket, identifier=ticket, magic=co._cfg.MAGIC_NUMBER if magic is None else magic,
+              sl=sl, tp=tp, price_open=price, volume=volume, time_msc=ticket, comment="")
+
+
+def _fresh_co():
+    for f in ("state.json", "state.json.corrupt"):
+        (co.STATE_DIR / f).unlink(missing_ok=True)
+    co.load_state()
+    co._config_errors, co._login, co._tick_seen = [], None, (None, 0.0)
+
+
+def test_single_instance_lock():
+    assert co.acquire_instance_lock()
+    first = co._lock_fh
+    try:
+        assert not co.acquire_instance_lock()                 # segunda copia del mismo bot: aborta
+    finally:
+        first.close()
+
+
+def test_mode_state_blocks_foreign_positions_and_read_errors():
+    _fresh_co()
+    own = co._cfg.MAGIC_NUMBER
+    restore = _mt5(positions_get=lambda **k: [], orders_get=lambda **k: [])
+    try:
+        assert co.mode_state("X", own)[0] == co.IDLE
+        mt5.positions_get = lambda **k: [_pos(1)]
+        assert co.mode_state("X", own)[0] == f"{co.ENGINE}_ACTIVE"
+        mt5.positions_get = lambda **k: [_pos(1), _pos(2, magic=20260618)]     # Swing abierto
+        assert co.mode_state("X", own)[0] == co.DRAINING
+        mt5.positions_get, mt5.orders_get = (lambda **k: []), (lambda **k: [_pos(3, magic=0)])   # orden manual
+        assert co.mode_state("X", own)[0] == co.DRAINING
+        mt5.positions_get = lambda **k: None                                   # no se pudo leer
+        assert co.mode_state("X", own)[0] == co.SAFE
+        mt5.positions_get = lambda **k: []
+        co._config_errors = ["RISK_PER_TRADE fuera de (0, 5 %]"]
+        assert co.mode_state("X", own)[0] == co.SAFE
+    finally:
+        restore()
+        _fresh_co()
+
+
+def test_state_survives_restart_and_corrupt_file_blocks():
+    _fresh_co()
+    co.save_state(last_trade_bar=123.0, peak=60.5, dd_stopped=True, halt_day="2026-10-27")
+    co.state.clear()
+    st = co.load_state()
+    assert (st["last_trade_bar"], st["peak"], st["dd_stopped"], st["halt_day"]) == (123.0, 60.5, True, "2026-10-27")
+    (co.STATE_DIR / "state.json").write_text("{roto", encoding="utf-8")
+    co.load_state()
+    assert co.state["breaker"]["manual"] and (co.STATE_DIR / "state.json.corrupt").exists()
+    restore = _mt5(positions_get=lambda **k: [])
+    try:
+        co.reconcile("X", co._cfg.MAGIC_NUMBER)
+        assert co.state["breaker"]                            # sigue bloqueado mientras exista el respaldo
+        (co.STATE_DIR / "state.json.corrupt").unlink()
+        co.reconcile("X", co._cfg.MAGIC_NUMBER)
+        assert co.state["breaker"] is None                    # el operador lo revisó y borró: se reanuda
+    finally:
+        restore()
+        _fresh_co()
+
+
+def test_auto_breaker_clears_only_when_own_positions_protected():
+    _fresh_co()
+    co.trip("3 fallos de orden seguidos")
+    restore = _mt5(positions_get=lambda **k: [_pos(5, sl=0.0)])
+    try:
+        co.reconcile("X", co._cfg.MAGIC_NUMBER)
+        assert co.state["breaker"]                            # hay una posición propia sin SL: no se suelta
+        mt5.positions_get = lambda **k: [_pos(5, sl=3990.0)]
+        co.reconcile("X", co._cfg.MAGIC_NUMBER)
+        assert co.state["breaker"] is None and co.state["order_fails"] == 0
+    finally:
+        restore()
+        _fresh_co()
+
+
+def test_consecutive_order_failures_trip_breaker():
+    _fresh_co()
+    co.record_order(False); co.record_order(False); co.record_order(True)
+    assert co.state["order_fails"] == 0 and not co.state["breaker"]     # un éxito reinicia la cuenta
+    for _ in range(co.ORDER_FAIL_LIMIT):
+        co.record_order(False)
+    assert co.state["breaker"] and co.mode_state.__name__               # SAFE_MODE
+    _fresh_co()
+
+
+def test_entry_gate_terminal_account_and_stale_tick():
+    _fresh_co()
+    own, tick = co._cfg.MAGIC_NUMBER, NS(time=1000)
+    demo = mt5.ACCOUNT_TRADE_MODE_DEMO
+    restore = _mt5(positions_get=lambda **k: [], orders_get=lambda **k: [],
+                   terminal_info=lambda: NS(connected=True, trade_allowed=True),
+                   account_info=lambda: NS(login=1, trade_mode=demo))
+    live = os.environ.pop("ALLOW_LIVE_TRADING", None)
+    try:
+        co._login = 1
+        assert co.entry_gate("X", own, tick)[0]
+        mt5.terminal_info = lambda: NS(connected=True, trade_allowed=False)
+        assert "Algo Trading" in co.entry_gate("X", own, tick)[1]
+        mt5.terminal_info = lambda: NS(connected=False, trade_allowed=True)
+        assert not co.entry_gate("X", own, tick)[0]
+        mt5.terminal_info = lambda: NS(connected=True, trade_allowed=True)
+        co._tick_seen = (1000, co.time.monotonic() - co.STALE_TICK_SEC - 1)
+        assert "precio sin cambios" in co.entry_gate("X", own, tick)[1]   # mismo tick hace demasiado
+        assert co.entry_gate("X", own, NS(time=1001))[0]                   # llega un tick nuevo: sigue
+        mt5.account_info = lambda: NS(login=1, trade_mode=demo + 2)        # la misma cuenta pasó a real
+        assert co.entry_gate("X", own, NS(time=1002))[2] == co.SAFE and co.state["breaker"]
+        _fresh_co(); co._login = 1
+        mt5.account_info = lambda: NS(login=2, trade_mode=demo)            # cambiaron la cuenta del terminal
+        assert co.entry_gate("X", own, NS(time=1003))[2] == co.SAFE
+    finally:
+        restore()
+        if live is not None:
+            os.environ["ALLOW_LIVE_TRADING"] = live
+        _fresh_co()
+
+
+def test_validate_config_flags_bad_values():
+    assert co.validate_config(co._cfg) == []                               # el config vigente es válido
+    bad = NS(**{k: getattr(co._cfg, k) for k in dir(co._cfg) if k.isupper()})
+    bad.RISK_PER_TRADE, bad.MAX_OPEN_TRADES, bad.LATE_ENTRY_SCORE = 0.5, 0, 1.0
+    errs = co.validate_config(bad)
+    assert len(errs) == 3 and any("RISK_PER_TRADE" in e for e in errs)
+
+
+def _send_env(**fns):
+    tm_saved = (tm.get_tick, tm.notify, tm.play_trade_sound)
+    tm.get_tick = lambda *a, **k: NS(ask=4000.1, bid=4000.0)
+    tm.notify = tm.play_trade_sound = lambda *a, **k: None
+    restore = _mt5(**{"order_check": lambda r: NS(retcode=0, comment="Done"), **fns})
+
+    def undo():
+        tm.get_tick, tm.notify, tm.play_trade_sound = tm_saved
+        restore()
+    return undo
+
+
+def test_open_trade_order_check_rejects_without_sending():
+    _fresh_co()
+    sent = []
+    undo = _send_env(order_check=lambda r: NS(retcode=10019, comment="No money"),
+                     order_send=lambda r: sent.append(r), positions_get=lambda **k: [])
+    try:
+        assert tm.open_trade("BUY", 3990.0, 4020.0, 0.01, SYM) is None
+        assert sent == [] and co.state["order_fails"] == 1
+    finally:
+        undo()
+        _fresh_co()
+
+
+def test_open_trade_no_response_reconciles_without_resending():
+    _fresh_co()
+    sent, book = [], []
+    undo = _send_env(order_send=lambda r: sent.append(r) or book.append(_pos(42, sl=3990.0)) or None,
+                     positions_get=lambda **k: list(book))
+    try:
+        assert tm.open_trade("BUY", 3990.0, 4020.0, 0.01, SYM) == 42      # el servidor sí la ejecutó
+        assert len(sent) == 1 and not co.state["breaker"]
+        _fresh_co(); sent.clear()
+        mt5.order_send = lambda r: sent.append(r) or None                  # sin respuesta y sin posición nueva
+        assert tm.open_trade("BUY", 3990.0, 4020.0, 0.01, SYM) is None
+        assert len(sent) == 1 and "desconocido" in co.state["breaker"]["reason"]   # no reenvía: SAFE_MODE
+    finally:
+        undo()
+        _fresh_co()
+
+
+def test_open_trade_partial_fill_counts_and_logs_real_volume():
+    _fresh_co()
+    undo = _send_env(order_send=lambda r: NS(retcode=mt5.TRADE_RETCODE_DONE_PARTIAL, order=9, comment=""),
+                     positions_get=lambda **k: [_pos(9, sl=3990.0, volume=0.01, price=4000.3)])
+    try:
+        assert tm.open_trade("BUY", 3990.0, 4020.0, 0.02, SYM) == 9
+        import json
+        filled = [json.loads(l) for l in journal.PATH.read_text(encoding="utf-8").splitlines()
+                  if '"filled"' in l][-1]
+        assert filled["partial"] and filled["lot"] == 0.01 and filled["slippage_pts"] == 20
+    finally:
+        undo()
+        _fresh_co()
+
+
+def test_open_trade_without_sl_repairs_or_closes():
+    _fresh_co()
+    saved = (tm._modify_sl, tm.close_trade)
+    book = {"sl": 0.0}
+    closed = []
+    tm._modify_sl = lambda t, sl, tp, d, s=None: book.update(sl=sl) or True
+    tm.close_trade = lambda t, info: closed.append(t) or True
+    undo = _send_env(order_send=lambda r: NS(retcode=mt5.TRADE_RETCODE_DONE, order=11, comment=""),
+                     positions_get=lambda **k: [_pos(11, sl=book["sl"])])
+    try:
+        assert tm.open_trade("BUY", 3990.0, 4020.0, 0.01, SYM) == 11
+        assert book["sl"] == 3990.0 and not closed and not co.state["breaker"]    # SL repuesto
+        book["sl"] = 0.0
+        tm._modify_sl = lambda *a, **k: False                                     # no se puede reponer
+        tm.open_trade("BUY", 3990.0, 4020.0, 0.01, SYM)
+        assert closed == [11] and "sin stop-loss" in co.state["breaker"]["reason"]   # se cierra + SAFE_MODE
+    finally:
+        tm._modify_sl, tm.close_trade = saved
+        undo()
+        _fresh_co()
+
+
+def test_can_open_trade_blocks_when_positions_unreadable():
+    saved = (rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped)
+    rm.is_daily_loss_exceeded = lambda: False
+    restore = _mt5(positions_get=lambda *a, **k: None if not k else [],    # por símbolo bien, la cuenta entera falla
+                   account_info=lambda: NS(balance=100, equity=100, margin_free=100, margin=0))
+    try:
+        ok, why = rm.can_open_trade("BUY")
+        assert not ok and "leer" in why                                    # antes contaba 0 abiertas y dejaba pasar
+    finally:
+        rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped = saved
+        restore()
+
+
+def test_news_cache_from_another_week_is_unavailable():
+    from bot_engine import news_filter as nf
+    from datetime import timedelta
+    saved = (nf._cache_events, nf._cache_time, nf._fetch_calendar)
+    nf._fetch_calendar = lambda: None                                      # sin internet
+    try:
+        nf._cache_events, nf._cache_time = [(datetime.now(timezone.utc), "USD", "High", "x")], datetime.now(timezone.utc)
+        assert nf._get_events() is not None                                # fresca: se usa
+        nf._cache_time = datetime.now(timezone.utc) - timedelta(days=8)
+        assert nf._get_events() is None                                    # otra semana: "no disponible"
+    finally:
+        nf._cache_events, nf._cache_time, nf._fetch_calendar = saved
+
+
+def test_backtest_trade_cost_matches_broker_commission():
+    sys.path.insert(0, str(ROOT / "backtesting"))
+    import engine_backtest as eb
+    assert eb.trade_cost(0.01, 0.01, 100.0) == 0.0                                  # sin costes: idéntico a antes
+    assert abs(eb.trade_cost(0.01, 0.01, 100.0, commission_per_lot=6.0) - 0.06) < 1e-9   # XAUUSD-ECN: 0.03 × 2 lados
+    assert abs(eb.trade_cost(0.01, 0.01, 100.0, slippage_points=5) - 0.10) < 1e-9        # 5 pts × 2 lados × $1/pt/0.01
+
+
+def test_backtest_regime_labels_do_not_look_ahead():
+    sys.path.insert(0, str(ROOT / "backtesting"))
+    import engine_backtest as eb
+    import numpy as np, pandas as pd
+    rng = np.random.default_rng(1)
+    c = 4000 + rng.normal(0, 3, 900).cumsum()
+    df = pd.DataFrame({"open": c, "high": c + 2, "low": c - 2, "close": c})
+    lab = eb.regime_labels(df, 20, window=300, min_hist=100)
+    assert lab[0] == "sin datos" and lab[-1] != "sin datos"
+    df2 = df.copy()
+    df2.loc[700:, ["high", "low", "close"]] *= 1.10                                # cambiar el futuro…
+    assert (eb.regime_labels(df2, 20, window=300, min_hist=100)[:701] == lab[:701]).all()   # …no cambia el pasado
+    st = eb.regime_stats([{"open_time": 850, "pnl": 1.0, "r": 0.5}], lab, np.arange(900))
+    assert sum(v["trades"] for v in st.values()) == 1
+    # vivo (core._regime_now): velas cerradas hasta k, shift=0 → misma etiqueta que el backtest en la vela de entrada k+1
+    for k in (500, 650, 898):
+        assert eb.regime_labels(df.iloc[:k + 1], 20, window=300, min_hist=100, shift=0)[-1] == lab[k + 1]
+
+
+def test_ml_calibration_beats_base_rate_only_when_informative():
+    sys.path.insert(0, str(ROOT / "backtesting"))
+    import engine_backtest as eb
+    import numpy as np
+    y = np.array([1, 0, 1, 0, 1, 0, 1, 0], bool)
+    good = eb.calibration(np.where(y, 0.8, 0.2), y)
+    flat = eb.calibration(np.full(8, 0.5), y)
+    assert good["brier"] < good["brier_base"] and good["logloss"] < good["logloss_base"]
+    assert flat["brier"] == flat["brier_base"]                                    # sin información = tasa base
+
+
+def test_trend_family_cap_and_session_vwap():
+    from bot_engine import indicators as ind, signals as sg
+    import pandas as pd
+    idx = pd.date_range("2026-10-26 22:00", periods=8, freq="h")                    # cruza la medianoche del servidor
+    s = pd.Series([10.0, 10, 20, 20, 20, 20, 20, 20], index=idx)                  # 22h, 23h | 00h… (día nuevo)
+    v = ind.calc_vwap_session(s, s, s, pd.Series(1.0, index=idx))
+    assert v.iloc[1] == 10.0 and v.iloc[2] == 20.0 and v.iloc[-1] == 20.0          # se reinicia a las 00:00
+    saved = getattr(sg._cfg, "TREND_FAMILY_CAP", None)
+    ip = {"ema9": 110, "ema21": 105, "ema50": 100, "ema200": 90, "rsi": 55, "macd": 1, "macd_signal": 0,
+          "macd_hist": 1, "macd_hist_prev": 0.5, "bb_upper": 120, "bb_lower": 90, "bb_middle": 105, "bb_pct": 0.6,
+          "vwap": 104, "adx": 30, "atr": 3.0}
+    try:
+        sg._cfg.TREND_FAMILY_CAP = None
+        full = sg.generate_signal(112, ip, ip, {"score": 0}, 3.0, ip)["score"]
+        sg._cfg.TREND_FAMILY_CAP = 1.0
+        capped = sg.generate_signal(112, ip, ip, {"score": 0}, 3.0, ip)["score"]
+        assert capped < full                                                       # la familia EMA vota menos
+    finally:
+        sg._cfg.TREND_FAMILY_CAP = saved
+
+
+def test_backtest_r_distribution_counts_every_trade():
+    sys.path.insert(0, str(ROOT / "backtesting"))
+    import engine_backtest as eb
+    t = lambda side, r, k: dict(side=side, r=r, pnl=r * 10, cost=0.0, open_time=k * 900, close_time=k * 900 + 600,
+                                bars=1, reason="SL" if r < 0 else "TP")
+    trades = [t("BUY", -1.0, 1), t("BUY", 2.0, 2), t("SELL", -2.5, 3), t("SELL", 0.4, 4)]
+    m = eb.metrics(trades, [(k * 900, 1000.0 + k) for k in range(6)], 1000.0)
+    assert sum(m["r_dist"]["hist"].values()) == 4 and m["r_dist"]["p5"] < -2.0   # todas, compras y ventas
+
+
+def test_symbol_resolves_per_broker_name():
+    from bot_engine.symbols import pick_symbol
+    s = lambda name, spread, mode=4: NS(name=name, spread=spread, trade_mode=mode)
+    vt = [s("BTCXAU", 5), s("XAUEUR-ECN", 3), s("XAUUSD-ECN", 11), s("XAUUSD247", 22), s("XAUUSD.crp", 1, 0)]
+    assert pick_symbol("XAUUSD", ("GOLD",), vt) == ("XAUUSD-ECN", ["XAUUSD-ECN", "XAUUSD247"])   # cruces y .crp fuera
+    assert pick_symbol("XAUUSD", (), [s("XAUUSD", 30), s("XAUUSDm", 10)])[0] == "XAUUSD"          # exacto gana
+    assert pick_symbol("XAUUSD", (), [s("XAUUSD", 30, 0), s("#XAUUSD", 10)])[0] == "#XAUUSD"      # exacto no operable
+    assert pick_symbol("XAUUSD", ("GOLD",), [s("GOLD.pro", 9), s("GOLDEUR", 2)])[0] == "GOLD.pro"
+    assert pick_symbol("XAUUSD", (), [s("xau/usd.pro", 8), s("XAUUSDm", 8)])[0] == "XAUUSDm"      # empate: más corto
+    assert pick_symbol("XAUUSD", ("GOLD",), [s("EURUSD", 1)]) == ("XAUUSD", [])
+
+
+def test_backtest_fine_entry_on_lower_tf():
+    import numpy as np
+    bt = _backtest_module()
+    n, f = 6, 3                                                     # 6 velas M15 = 18 velas M5, spread 0
+    arr = (np.full(n, 100.0), np.full(n, 100.05), np.full(n, 99.95), np.full(n, 100.0), np.zeros(n))
+    x = {k: np.full(n * f, v) for k, v in (("o", 100.0), ("h", 100.05), ("l", 99.95), ("c", 100.0))}
+
+    def run(mode, edit=None):
+        xx = {k: v.copy() for k, v in x.items()}
+        for (k, m), v in (edit or {}).items():
+            xx[k][m] = v
+        ex = NS(**xx, sp=np.zeros(n * f), t=np.arange(n * f) * 300, t_prim=np.arange(n) * 900,
+                e9=np.where(np.arange(n * f) == 3, 2.0, 1.0), e21=np.ones(n * f), mode=mode, f=0.25)
+        return bt.make_outcome(arr, np.full(n, 1.0), SYM, rm, tm, max_bars=2, ex=ex)(0, bt.BUY, 1.5, 3.0)
+    ctrl = bt.make_outcome(arr, np.full(n, 1.0), SYM, rm, tm, max_bars=2)(0, bt.BUY, 1.5, 3.0)
+    assert run("market")[2:4] == ctrl[2:4]                          # misma entrada y SL que hoy
+    out = run("pullback", {("l", 4): 99.70})                      # vela M5 n.º 2 de la M15 k=1 cruza 99.75
+    assert out[2] == 99.75 and out[3] == ctrl[3]                    # entra en el límite, mismo SL → menos riesgo
+    assert run("pullback", {("l", 4): 99.76}) == "noexec"         # no lo cruza: sin operación
+    assert run("pullback", {("l", 4): 98.0})[4] == "SL"           # en la vela del llenado solo cuenta el SL
+    out = run("confirm", {("c", 3): 100.04, ("o", 4): 100.03})    # M5 n.º 1 cierra al alza con EMA9 > EMA21
+    assert out[2] == 100.03                                         # entra al abrir la siguiente M5
+    assert run("confirm") == "noexec"                               # sin vela a favor: sin operación
+
 
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]

@@ -18,7 +18,11 @@ ROOT = HERE.parent                          # raíz del repo (contiene bot_engin
 sys.path.insert(0, str(ROOT))               # para 'import bot_engine'
 sys.path.insert(0, str(HERE))               # queda en sys.path[0] → 'import config' = el de ESTE bot
 
-from bot_engine.core import run
+import config                               # noqa: E402
+from bot_engine.symbols import resolve_symbol  # noqa: E402
+config.SYMBOL = resolve_symbol(config.SYMBOL, getattr(config, "SYMBOL_ALIASES", ()))   # antes de importar el motor
+
+from bot_engine.core import run             # noqa: E402
 
 if __name__ == "__main__":
     run()

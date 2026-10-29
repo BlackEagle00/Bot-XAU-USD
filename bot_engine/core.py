@@ -20,10 +20,11 @@ El bot ejecuta el siguiente ciclo cada LOOP_INTERVAL segundos:
 
 Detención: Ctrl+C → cierre limpio (las posiciones abiertas se conservan en MT5)
 """
+import math
 import time
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, date
 
 import MetaTrader5 as mt5
 
@@ -39,9 +40,9 @@ from .connection import connect, disconnect, is_market_open
 from .data_handler import (
     get_market_data, get_tick, get_account_info,
     get_symbol_info, get_open_positions,
-    get_orderflow_delta, get_intermarket_bias, server_now,
+    get_orderflow_delta, get_intermarket_bias, server_now, fetch_ohlcv,
 )
-from .indicators import calculate_all
+from .indicators import calculate_all, regime_labels, anomalous_bars
 from .patterns import analyze_patterns
 from .signals import generate_signal
 from .news_filter import in_news_blackout
@@ -49,7 +50,8 @@ from .risk_manager import (
     calculate_lot, lot_plan, calculate_sl_tp, check_risk_reward,
     can_open_trade, get_total_daily_pnl, capital_tier, spread_ok, fit_sl_to_capital, over_min_lot_cap,
 )
-from . import ml_filter, grid
+from . import ml_filter, grid, coordinator, journal
+from . import risk_manager as _rm
 import config as _cfg
 from .trade_manager import (
     open_trade, close_all_trades,
@@ -73,6 +75,24 @@ _last_basket_bar = None                             # vela de análisis de la ú
 GRID_ONE_PER_BAR = getattr(_cfg, "GRID_ONE_PER_BAR", True)   # False: varias cestas por vela (las separa grid.extra_basket_block)
 _last_trade_bar  = None                             # vela de señal de la última entrada (1 por vela, como el backtest)
 ENTRY_WINDOW_MIN = getattr(_cfg, "ENTRY_WINDOW_MIN", None)   # min tras el cierre de la vela en que se puede entrar (None = sin límite)
+_sig_id       = None                                # id de la señal en curso (<MOTOR>-<apertura de la vela>), para el diario
+_anom_note    = None                                # señal ya anotada por el detector M1 en modo informativo
+_last_note    = None                                # (señal, motivo) ya registrado: el ciclo de 15 s no repite la misma línea
+
+
+def _reject(msg: str) -> None:
+    """Registra por qué una señal no se operó (log + diario), una vez por señal y motivo."""
+    global _last_note
+    if (_sig_id, msg) != _last_note:
+        _last_note = (_sig_id, msg)
+        logger.info(msg)
+        journal.log("rejected", id=_sig_id, reason=msg)
+
+
+def _persist() -> None:
+    """Guarda en disco lo que un reinicio no debe olvidar (última vela operada, pico de equity, cortes)."""
+    coordinator.save_state(last_trade_bar=_last_trade_bar, peak=_rm._peak, dd_stopped=_rm._dd_stopped,
+                           halt_day=_rm._halt_day.isoformat() if _rm._halt_day else None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -144,12 +164,13 @@ def _run_cycle():
     Ejecuta un ciclo completo de análisis y ejecución.
     Toda la lógica de trading vive aquí.
     """
-    global _cycle_num, _trades_today, _last_balance, _last_trade_bar
+    global _cycle_num, _trades_today, _last_balance, _last_trade_bar, _sig_id, _anom_note
 
     _cycle_num += 1
 
-    # ── 1. Verificar conexión ─────────────────────────────────────────────────
-    if not mt5.terminal_info():
+    # ── 1. Verificar conexión (terminal vivo Y conectado al servidor) ─────────
+    ti = mt5.terminal_info()
+    if not ti or not getattr(ti, "connected", True):
         logger.warning("⚡ Conexión perdida. Reconectando...")
         if not connect(retries=2, delay=3):
             logger.error("No se pudo reconectar. Ciclo omitido.")
@@ -221,7 +242,39 @@ def _run_cycle():
     if USE_GRID and signal["action"] in ("BUY", "SELL") and gatr:
         _try_open_basket(signal["action"], tick, data["primary"].index[-1].timestamp(), gatr, signal["score"])
     elif signal["action"] in ("BUY", "SELL") and _entry_bar_ok(data["primary"].index[-1].timestamp(), signal.get("score", 0.0)):
+        bar = data["primary"].index[-1].timestamp()
+        if _sig_id != f"{coordinator.ENGINE}-{int(bar)}":
+            _sig_id = f"{coordinator.ENGINE}-{int(bar)}"
+            journal.log("signal", id=_sig_id, action=signal["action"], score=round(signal["score"], 2),
+                        spread=round(tick.ask - tick.bid, 5), atr=round(atr, 5),
+                        breakdown={k: round(v, 2) for k, v in signal.get("breakdown", {}).items()})
+        # Coordinador: solo un motor abre, terminal conectado, misma cuenta, precio vivo, sin cortacircuitos
+        ok, why, mode = coordinator.entry_gate(SYMBOL, _cfg.MAGIC_NUMBER, tick)
+        if not ok:
+            _reject(f"🧭 {signal['action']} bloqueado ({mode}): {why}")
+            return
+        skip = getattr(_cfg, "SKIP_REGIMES", ())
+        if skip:
+            reg = _regime_now()
+            if reg in skip or reg is None:          # sin historia suficiente = no se sabe → no entra
+                _reject(f"🌡 {signal['action']} bloqueado: régimen {reg or 'sin datos'} en SKIP_REGIMES")
+                return
+        atr_max = getattr(_cfg, "ATR_VOLATILITY_MAX", None)
+        if atr_max and atr > atr_max:               # pausa por volatilidad extrema: el SL (×ATR) costaría demasiado
+            _reject(f"🌪 {signal['action']} bloqueado: ATR {atr:.2f} sobre el máximo {atr_max} (ATR_VOLATILITY_MAX)")
+            return
+        an = _anomaly_now(tick) if getattr(_cfg, "USE_ANOMALY_FILTER", False) else None
+        if an:
+            if getattr(_cfg, "ANOMALY_BLOCK", False):
+                _reject(f"⚡ {signal['action']} bloqueado: ALTA_VOLATILIDAD_ANÓMALA ({an})")
+                return
+            if _anom_note != _sig_id:                # informativo: sin diario "rejected" y una vez por señal
+                _anom_note = _sig_id
+                logger.info(f"⚡ (simulado) {signal['action']} se habría bloqueado: ALTA_VOLATILIDAD_ANÓMALA ({an})")
         bundle = _ml_bundle()                      # None si el filtro predictivo está apagado
+        if bundle is False:
+            _reject(f"🧠 {signal['action']} bloqueado: USE_ML_FILTER activo pero el modelo falta o no es válido (ML_FAIL_CLOSED)")
+            return
         feats = ml_filter.features(1 if signal["action"] == "BUY" else -1, price, ind_primary,
                                    ind_trend, ind_higher, signal, tick.ask - tick.bid,
                                    tick.time) if bundle else None
@@ -240,12 +293,44 @@ def _tf_minutes(tf) -> int:
     return tf if tf < 0x4000 else (tf & 0x3FFF) * 60
 
 
+def _regime_now():
+    """Régimen de la vela de entrada, igual que el backtest (2 000 velas de terciles + 600 de calentamiento del ATR/ADX)."""
+    df = fetch_ohlcv(SYMBOL, _cfg.PRIMARY_TF, 2600)
+    if df is None:
+        return None
+    lab = str(regime_labels(df, getattr(_cfg, "ADX_MIN_TREND", 20), shift=0)[-1])
+    return None if lab == "sin datos" else lab
+
+
+def _anomaly_now(tick):
+    """Vela M1 anómala (rango > ANOMALY_RANGE_MULT × media de las ANOMALY_LOOKBACK previas) en los últimos
+    COOLING_DOWN_PERIOD minutos → texto para el log; None si no hay. Sin estado: el enfriamiento sale de las velas."""
+    cool, look = int(getattr(_cfg, "COOLING_DOWN_PERIOD", 30)), int(getattr(_cfg, "ANOMALY_LOOKBACK", 20))
+    df = fetch_ohlcv(SYMBOL, mt5.TIMEFRAME_M1, cool + look + 2)          # +1 en formación (se descarta)
+    if df is None or len(df) < look + 2:
+        return None
+    flags = anomalous_bars(df["high"], df["low"], float(getattr(_cfg, "ANOMALY_RANGE_MULT", 3.0)), look)[-cool:]
+    if not flags.any():
+        return None
+    k = len(df) - cool + int(flags.nonzero()[0][-1])                      # la más reciente
+    rng = df["high"] - df["low"]
+    off = math.ceil((tick.time - time.time()) / 3600 - 0.05) * 3600      # servidor → local; ceil: tick viejo en pausas
+    t = datetime.fromtimestamp(df.index[k].timestamp() - off)
+    end = datetime.fromtimestamp(df.index[k].timestamp() - off + (cool + 1) * 60)
+    return (f"vela M1 {t:%H:%M} rango {rng.iloc[k]:.2f} = {rng.iloc[k] / rng.iloc[k - look:k].mean():.1f}× "
+            f"promedio; enfriamiento hasta {end:%H:%M}")
+
+
 def _ml_bundle():
-    """Filtro predictivo activo, salvo con capital ≥ ML_FILTER_MAX_CAPITAL (swing: desde 500 USD rinde más sin él)."""
-    bundle = ml_filter.bundle_for(SYMBOL)
+    """Filtro predictivo activo, salvo con capital ≥ ML_FILTER_MAX_CAPITAL (swing: desde 500 USD rinde más sin él).
+    False = el filtro debía actuar pero el modelo falta o no es válido: con ML_FAIL_CLOSED (por defecto) no se entra."""
+    if not getattr(_cfg, "USE_ML_FILTER", False):
+        return None
     cap = getattr(_cfg, "ML_FILTER_MAX_CAPITAL", None)
-    acc = get_account_info() if bundle and cap else None
-    return None if acc and min(acc.balance, acc.equity) >= cap else bundle
+    acc = get_account_info() if cap else None
+    if acc and min(acc.balance, acc.equity) >= cap:
+        return None
+    return ml_filter.bundle_for(SYMBOL) or (False if getattr(_cfg, "ML_FAIL_CLOSED", True) else None)
 
 
 def _entry_bar_ok(bar_open: float, score: float = 0.0) -> bool:
@@ -334,18 +419,18 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float, ml=(None, None
     if USE_NEWS_FILTER:
         in_black, ev = in_news_blackout()
         if in_black:
-            logger.info(f"📰 Trade {action} bloqueado por noticia de alto impacto: {ev}")
+            _reject(f"📰 Trade {action} bloqueado por noticia de alto impacto: {ev}")
             return
 
     # A. Validar condiciones de riesgo (pérdida diaria, máx trades, margen)
     ok, reason = can_open_trade(action)
     if not ok:
-        logger.info(f"🚫 Trade {action} bloqueado: {reason}")
+        _reject(f"🚫 Trade {action} bloqueado: {reason}")
         return
 
     # B. Anti-duplicado: evita abrir al mismo nivel de precio
     if is_too_close_to_existing(action, price, atr):
-        logger.info(f"⚠  {action} ignorado: posición existente demasiado cercana.")
+        _reject(f"⚠  {action} ignorado: posición existente demasiado cercana.")
         return
 
     # B2. Filtro predictivo: solo señales con P(TP antes que SL) ≥ τ, con el SL/TP del modelo
@@ -354,7 +439,7 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float, ml=(None, None
     if bundle:
         allowed, p = ml_filter.allows(bundle, feats)
         if not allowed:
-            logger.info(f"🧠 {action} descartado: P(éxito) {p:.0%} < umbral {bundle['tau']:.0%}")
+            _reject(f"🧠 {action} descartado: P(éxito) {p:.0%} < umbral {bundle['tau']:.0%}")
             return
         sl_m, tp_m = bundle["sl_mult"], bundle["tp_mult"]
         min_rr = tp_m / sl_m * 0.9
@@ -370,12 +455,12 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float, ml=(None, None
     # D2. Verificar R:R real (el broker puede deformarlo con su distancia mínima)
     rr_ok, rr = check_risk_reward(exec_price, sl, tp, min_rr)
     if not rr_ok:
-        logger.info(f"🚫 Trade {action} descartado: R:R real {rr:.2f} < mínimo {min_rr or MIN_RR}")
+        _reject(f"🚫 Trade {action} descartado: R:R real {rr:.2f} < mínimo {min_rr or MIN_RR}")
         return
 
     # D3. El spread es un costo fijo: con stops cortos se come la ventaja
     if not spread_ok(tick.ask - tick.bid, abs(exec_price - sl)):
-        logger.info(f"🚫 Trade {action} descartado: spread {tick.ask - tick.bid:.2f} > 25% del stop")
+        _reject(f"🚫 Trade {action} descartado: spread {tick.ask - tick.bid:.2f} > 25% del stop")
         return
 
     # E. Calcular lote con la distancia REAL del SL (el broker puede haberla ampliado)
@@ -415,7 +500,10 @@ def _try_open_trade(signal: dict, price: float, tick, atr: float, ml=(None, None
     for reason_text in signal.get("reasons", [])[:5]:
         logger.debug(f"   ↳ {reason_text}")
 
-    # G. Enviar orden a MT5
+    # G. Enviar orden a MT5 (open_trade hace order_check, concilia y verifica el SL en la posición)
+    journal.log("authorized", id=_sig_id, action=action, lot=lot, price=exec_price, sl=sl, tp=tp,
+                spread=round(tick.ask - tick.bid, 5),
+                risk_usd=round(_rm.lot_risk_pct(acc, _symbol_info, abs(exec_price - sl), lot) * acc.balance, 2))
     ticket = open_trade(action, sl, tp, lot, _symbol_info,
                         comment=f"s{signal['score']:+.1f}")
     if ticket:
@@ -472,6 +560,11 @@ def run():
 
     _print_banner()
 
+    # ── Una sola instancia por bot (dos copias abrirían órdenes duplicadas) ───
+    if not coordinator.acquire_instance_lock():
+        logger.critical(f"⛔ Ya hay otra instancia de este bot corriendo ({coordinator.STATE_DIR}). Abortando.")
+        sys.exit(1)
+
     # ── Conexión a MT5 ────────────────────────────────────────────────────────
     if not connect():
         logger.critical("No se pudo conectar a MT5. Abortando.")
@@ -484,8 +577,16 @@ def run():
         disconnect()
         sys.exit(1)
 
-    # ── Resumen inicial ───────────────────────────────────────────────────────
+    # ── Estado persistente (sobrevive reinicios) + validación + conciliación ──
+    global _last_trade_bar
+    st = coordinator.load_state()
+    _last_trade_bar = st["last_trade_bar"]
+    _rm._peak, _rm._dd_stopped = float(st["peak"] or 0.0), bool(st["dd_stopped"])
+    _rm._halt_day = date.fromisoformat(st["halt_day"]) if st["halt_day"] else None
     acc = get_account_info()
+    coordinator.start(acc)
+
+    # ── Resumen inicial ───────────────────────────────────────────────────────
     if acc:
         _print_config(acc)
         notify(
@@ -503,6 +604,7 @@ def run():
 
         try:
             _run_cycle()
+            _persist()
         except KeyboardInterrupt:
             break
         except Exception as exc:

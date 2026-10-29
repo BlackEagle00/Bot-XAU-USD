@@ -132,7 +132,8 @@ def lot_plan(account, symbol_info, sl_distance: float) -> Tuple[float, float]:
         # siempre que no pase de MAX_RISK_MIN_LOT. need = capital con el que vuelve a caber en el 1%.
         cap = getattr(_cfg, "MAX_RISK_MIN_LOT", MAX_RISK_MIN_LOT)
         min_risk = min_lot * sl_value_per_lot
-        if capital > 0 and min_lot <= max_lot + 1e-9 and (min_risk <= capital * cap or not _enforce()):
+        hard = _enforce() or getattr(_cfg, "MIN_LOT_CAP_HARD", False)    # tope duro sin los niveles de cuenta
+        if capital > 0 and min_lot <= max_lot + 1e-9 and (min_risk <= capital * cap or not hard):
             return round(min_lot, 8), min_risk / RISK_PER_TRADE
         return 0.0, min_risk / cap                         # capital mínimo para operar este activo
     lot, next_lot = round(lot, 8), (lot + step if step > 0 else None)
@@ -199,8 +200,8 @@ def calculate_lot(account, symbol_info, sl_distance: float) -> float:
         else:
             cap = getattr(_cfg, "MAX_RISK_MIN_LOT", MAX_RISK_MIN_LOT)
             logger.warning(
-                f"El lote mínimo arriesgaría más del {cap*100:.0f}% con SL de {sl_distance:.2f}: "
-                f"necesita capital ≥ {need:,.2f}. Trade omitido."
+                f"TRADE_REJECTED: Account balance insufficient for technical SL under {cap*100:.0f}% risk rule "
+                f"(SL {sl_distance:.2f} con el lote mínimo; necesita capital ≥ {need:,.2f})"
             )
     else:
         risk = lot_risk_pct(account, symbol_info, sl_distance, lot)
@@ -425,7 +426,10 @@ def can_open_trade(action: str, symbol: str = None) -> Tuple[bool, str]:
         return False, f"Corte total: la equity cayó {pct:.0%} desde su máximo ({_peak:,.2f}); reinicia el bot para seguir"
     tier = capital_tier(min(acc.balance, acc.equity))
     # Todas las posiciones de este MAGIC, en cualquier activo: el nivel limita el riesgo TOTAL abierto
-    open_pos = [p for p in (mt5.positions_get() or []) if p.magic == MAGIC_NUMBER]
+    every = mt5.positions_get()
+    if every is None:                                  # error de lectura ≠ "0 abiertas"
+        return False, f"No se pudieron leer las posiciones de la cuenta: {mt5.last_error()}"
+    open_pos = [p for p in every if p.magic == MAGIC_NUMBER]
     if len(open_pos) >= tier["max_open"]:
         return False, f"Máximo de trades abiertos ({tier['max_open']}, nivel {tier['name']}) alcanzado"
 

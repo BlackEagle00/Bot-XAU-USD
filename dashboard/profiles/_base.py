@@ -16,9 +16,11 @@ _TF = {"M1": ("M5", "M15", 1440), "M5": ("M15", "H1", 288), "M15": ("H1", "H4", 
 _MODE_LABELS = {"scalping": "Scalping", "swing": "Swing", "grid": "Grid"}
 
 
-def profile(name: str, base: str, tf: str, sections: dict, **overrides) -> dict:
-    """Config del perfil `name` (p.ej. "xauusd_swing") a partir del config `base` (ruta desde la raíz)."""
+def profile(name: str, base: str, tf: str, sections: dict = None, **overrides) -> dict:
+    """Config del perfil `name` (p.ej. "xauusd_swing") a partir del config `base` (ruta desde la raíz).
+    Sin `sections`, el panel muestra el SYMBOL del bot (cada bróker nombra el oro distinto: XAUUSD, XAUUSD-ECN…)."""
     cfg = {k: v for k, v in runpy.run_path(str(ROOT / base)).items() if k.isupper()}
+    sections = sections or {"Metales": [cfg["SYMBOL"]]}
     trend, higher, day = _TF[tf]
     mode = name.rsplit("_", 1)[1]
     cfg.update(

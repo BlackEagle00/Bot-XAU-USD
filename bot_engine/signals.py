@@ -495,7 +495,9 @@ def generate_signal(
     pat_names_bear = patterns.get("bearish", [])
 
     # ── Suma ponderada total ──────────────────────────────────────────────────
-    total = (
+    # EMA, MACD, TF de tendencia y macro derivan todos de medias móviles: votan casi siempre juntos.
+    # TREND_FAMILY_CAP (experimental, None = apagado) limita su suma para no contarlos como 4 confirmaciones.
+    total = (                                  # orden original de la suma: con el tope apagado, idéntico bit a bit
         s_ema   * w["ema"]      +
         s_rsi   * w["rsi"]      +
         s_macd  * w["macd"]     +
@@ -509,6 +511,10 @@ def generate_signal(
         s_of * w.get("orderflow", 0.0)   +
         s_im * w.get("intermarket", 0.0)
     )
+    cap = getattr(_cfg, "TREND_FAMILY_CAP", None)
+    if cap is not None:
+        family = s_ema * w["ema"] + s_macd * w["macd"] + s_trend_conf + s_macro
+        total += max(-cap, min(cap, family)) - family
 
     # ── Consolidar razones ────────────────────────────────────────────────────
     reasons = [f"Tendencia: {trend.upper()} | Score total: {total:+.2f}"]
@@ -628,6 +634,8 @@ def generate_signal(
         f"IM:{s_im*w.get('intermarket',0.0):+.2f} | "
         f"ADX:{(adx_now if adx_now is not None else 0):.0f} | "
         f"Tendencia: {trend}{_macro_trend_field} | ATR: {atr:.3f}"
+        + (f" | {next((r for r in reasons if r.startswith('⛔')), '')}"     # por qué una señal clara quedó en HOLD
+           if action == "HOLD" and abs(total) >= MIN_SIGNAL_SCORE else "")
     )
 
     return {

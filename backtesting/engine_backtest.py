@@ -29,6 +29,7 @@ No reproduce (no hay datos históricos): noticias, order-flow, DXY, swaps, comis
 El BE/trailing se evalúa una vez por vela (en vivo cada 15-60 s); si una vela toca SL y TP → SL.
 """
 import argparse
+import re
 import hashlib
 import json
 import math
@@ -57,7 +58,11 @@ BUY, SELL = 0, 1   # = mt5.ORDER_TYPE_BUY / SELL
 SIG_VERSION = 3    # formato del caché de señales (2: + tendencia del TF superior; 3: score sin redondear)
 # Claves de riesgo que no cambian las señales: un --set con ellas reusa el caché de señales
 POST_KEYS = {"MAX_RISK_MIN_LOT", "MICRO_SL_FIT", "MICRO_MIN_SL_ATR", "GRID_EXEC_TF", "MAX_HOLD_MINUTES", "DAILY_LOSS_ALERT_ONLY",
-             "MAX_SPREAD_POINTS", "BT_REAL_SPREAD"}
+             "MAX_SPREAD_POINTS", "BT_REAL_SPREAD", "BT_COMMISSION_PER_LOT", "BT_SLIPPAGE_POINTS",
+             "BT_SWAP_LONG_POINTS", "BT_SWAP_SHORT_POINTS", "SKIP_REGIMES",
+             "ENTRY_EXEC_TF", "ENTRY_MODE", "ENTRY_PULLBACK_ATR", "MIN_LOT_CAP_HARD",
+             "ANOMALY_BLOCK", "ANOMALY_RANGE_MULT", "ANOMALY_LOOKBACK", "COOLING_DOWN_PERIOD",
+             "BT_SPREAD_MULT", "BT_SPREAD_OFFSET_POINTS"}
 
 # (SL, TP) en múltiplos de ATR. (None, None) = los del config. TP < SL sube el acierto y baja la ganancia por operación.
 COMBOS = [(None, None), (1.5, 0.5), (1.5, 0.75), (1.5, 1.0), (2.0, 0.5), (2.0, 0.75), (2.0, 1.0), (2.0, 1.5)]
@@ -90,6 +95,36 @@ def closed_upto(closes: np.ndarray, t: int) -> int:
 def entry_price(side: int, bar_open: float, spread_price: float) -> float:
     """Las velas de MT5 son BID: BUY entra en ask = bid + spread; SELL en bid."""
     return bar_open + spread_price if side == BUY else bar_open
+
+
+def trade_cost(lot: float, point: float, vpu: float, commission_per_lot: float = 0.0, slippage_points: float = 0.0) -> float:
+    """Coste en USD de una operación: comisión ida y vuelta + slippage adverso en la entrada y en la salida.
+    shortcut: el slippage se descuenta del P&L, no mueve el precio dentro de la triple barrera; basta para
+    costes de pocos puntos, revisar si el slippage medido en vivo se acerca al tamaño del SL."""
+    return lot * commission_per_lot + 2 * slippage_points * point * lot * vpu
+
+
+def regime_labels(*a, **k):
+    """La misma función que usa core en vivo; import diferido porque bot_engine necesita el config del perfil en sys.path."""
+    from bot_engine.indicators import regime_labels as f
+    return f(*a, **k)
+
+
+def regime_stats(trades: list, labels: np.ndarray, times: np.ndarray) -> dict:
+    """PF, acierto y expectativa en R por régimen a la apertura de cada operación."""
+    out = {}
+    for t in trades:
+        k = min(int(np.searchsorted(times, t["open_time"])), len(labels) - 1)
+        out.setdefault(str(labels[k]), []).append(t)
+    res = {}
+    for lab, ts in sorted(out.items()):
+        pnl = np.array([t["pnl"] for t in ts])
+        gl = float(-pnl[pnl < 0].sum())
+        res[lab] = {"trades": len(ts), "pnl": round(float(pnl.sum()), 2),
+                    "win_pct": round(float((pnl > 0).mean()) * 100, 1),
+                    "pf": round(float(pnl[pnl > 0].sum()) / gl, 2) if gl > 0 else None,
+                    "exp_r": round(float(np.mean([t["r"] for t in ts])), 3)}
+    return res
 
 
 def exit_price(side: int, o: float, h: float, l: float, spread_price: float,
@@ -302,9 +337,15 @@ def real_spread(bar_pts, times, close, symbol: str):
     return np.maximum(bar_pts, prof[(times // 3600) % 24, q] * close / close[-1])
 
 
-def make_outcome(arr, atr_at, sym, rm, tm, max_bars: int = MAX_HOLD_BARS):
-    """Devuelve outcome(i, side, sl_mult, tp_mult) → (R, exit_idx, entry, sl0, motivo) | 'rr' | 'spread'.
-    max_bars: velas hasta el cierre por TIEMPO (MAX_HOLD_MINUTES del config, como trade_manager en vivo)."""
+def make_outcome(arr, atr_at, sym, rm, tm, max_bars: int = MAX_HOLD_BARS, ex=None):
+    """Devuelve outcome(i, side, sl_mult, tp_mult) → (R, exit_idx, entry, sl0, motivo) | 'rr' | 'spread' | 'noexec'.
+    max_bars: velas hasta el cierre por TIEMPO (MAX_HOLD_MINUTES del config, como trade_manager en vivo).
+    ex (experimento ENTRY_EXEC_TF): velas finas (o, h, l, c, sp, t, e9, e21) + t_prim (aperturas del TF primario),
+    mode y f. La entrada se afina con las velas finas que caen DENTRO de la vela de entrada k:
+      market   → a mercado en la 1.ª vela fina (control: mide solo el efecto de recorrer k en velas finas)
+      pullback → límite a f×ATR en contra con los MISMOS niveles SL/TP; llena solo si el precio lo cruza por un spread
+      confirm  → una de las 2 primeras velas finas cierra a favor con EMA9/21 finas alineadas; entra en la siguiente
+    Sin entrada en la vela k → 'noexec'. Tras la vela k sigue igual que sin ex (BE/trailing al cierre de cada vela)."""
     o, h, l, c, sp = arr
     max_spread = getattr(rm._cfg, "MAX_SPREAD_POINTS", float("inf"))
     cur = NS(pos=None, bid=0.0, ask=0.0)
@@ -325,9 +366,26 @@ def make_outcome(arr, atr_at, sym, rm, tm, max_bars: int = MAX_HOLD_BARS):
         risk = abs(px - sl)
         if not rm.spread_ok(sp[k], risk) or sp[k] / sym.point >= max_spread:   # = connection.is_market_open
             return "spread"
-        pos = cur.pos = NS(ticket=0, type=side, price_open=px, sl=sl, tp=tp, price_current=px)
         last = min(len(o), k + max_bars) - 1
-        for j in range(k, last + 1):
+        j0 = k
+        if ex is not None:
+            fx = _fine_entry(k, i, side, action, px, sl, tp, slm, tpm)
+            if not isinstance(fx, tuple):
+                return fx
+            px, sl, tp, x, j0 = fx
+            risk = abs(px - sl)
+            if x is not None:                            # salió dentro de la vela k (recorrido fino)
+                return ((x - px) if side == BUY else (px - x)) / risk, k, px, sl, (
+                    "TP" if abs(x - tp) < sym.point / 2 else "SL" if abs(x - sl) < sym.point / 2 else "HUECO")
+            if j0 > last:
+                return "noexec"
+        pos = cur.pos = NS(ticket=0, type=side, price_open=px, sl=sl, tp=tp, price_current=px)
+        if j0 > k:                                       # la vela k ya se recorrió en fino: BE/trailing a su cierre
+            cur.bid, cur.ask = c[k], c[k] + sp[k]
+            pos.price_current = c[k] if side == BUY else c[k] + sp[k]
+            if atr_at[k] == atr_at[k] and not tm.update_breakeven(pos, atr_at[k], sym):
+                tm.update_trailing_stop(pos, atr_at[k], sym)
+        for j in range(j0, last + 1):
             x = exit_price(side, o[j], h[j], l[j], sp[j], pos.sl, pos.tp, fresh=(j == k))
             timed_out = x is None and j == last
             if timed_out:
@@ -343,6 +401,50 @@ def make_outcome(arr, atr_at, sym, rm, tm, max_bars: int = MAX_HOLD_BARS):
                 pos.price_current = c[j] if side == BUY else c[j] + sp[j]
                 if not tm.update_breakeven(pos, a, sym):
                     tm.update_trailing_stop(pos, a, sym)
+
+    def _fine_entry(k, i, side, action, px, sl, tp, slm, tpm):
+        """(entrada, sl, tp, salida_en_k | None, siguiente vela primaria) o 'noexec' / 'spread'. Ver make_outcome."""
+        xo, xh, xl, xc, xs = ex.o, ex.h, ex.l, ex.c, ex.sp
+        a = int(np.searchsorted(ex.t, ex.t_prim[k]))
+        b = int(np.searchsorted(ex.t, ex.t_prim[k + 1] if k + 1 < len(ex.t_prim) else np.iinfo(np.int64).max))
+        if b <= a:
+            return "noexec"
+        if ex.mode == "pullback":
+            lim = px - ex.f * atr_at[i] if side == BUY else px + ex.f * atr_at[i]
+            e = next((m for m in range(a, b)
+                      if (xl[m] + 2 * xs[m] <= lim if side == BUY else xh[m] >= lim + xs[m])), None)
+            if e is None:
+                return "noexec"
+            px = lim
+            if not rm.spread_ok(xs[e], abs(px - sl)):
+                return "spread"
+            if (xl[e] <= sl) if side == BUY else (xh[e] + xs[e] >= sl):     # en la vela del llenado solo cuenta el SL
+                return px, sl, tp, sl, k + 1
+            first = e + 1
+        else:
+            if ex.mode == "confirm":
+                up = side == BUY
+                m = next((m for m in range(a, min(a + 2, b - 1))
+                          if ((xc[m] > xo[m] and ex.e9[m] > ex.e21[m]) if up
+                              else (xc[m] < xo[m] and ex.e9[m] < ex.e21[m]))), None)
+                if m is None:
+                    return "noexec"
+                e = m + 1
+            else:
+                e = a
+            px = entry_price(side, xo[e], xs[e])
+            sl, tp = rm.calculate_sl_tp(action, px, atr_at[i], sym, slm, tpm)
+            if not rm.spread_ok(xs[e], abs(px - sl)):
+                return "spread"
+            x = exit_price(side, xo[e], xh[e], xl[e], xs[e], sl, tp, fresh=True)
+            if x is not None:
+                return px, sl, tp, x, k + 1
+            first = e + 1
+        for m in range(first, b):
+            x = exit_price(side, xo[m], xh[m], xl[m], xs[m], sl, tp)
+            if x is not None:
+                return px, sl, tp, x, k + 1
+        return px, sl, tp, None, k + 1
     return outcome
 
 
@@ -364,6 +466,8 @@ def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: f
     blocked = dict(max_open=0, anti_dup=0, lot0=0, daily_halt=0)
     halt_day = day = None
     day_realized, peak, dd_stop = 0.0, 0.0, False
+    comm, slip = getattr(cfg, "BT_COMMISSION_PER_LOT", 0.0), getattr(cfg, "BT_SLIPPAGE_POINTS", 0.0)
+    swaps = (getattr(cfg, "BT_SWAP_LONG_POINTS", 0.0), getattr(cfg, "BT_SWAP_SHORT_POINTS", 0.0))   # puntos/lote/noche (MT5)
 
     def unrealized(bid, spr):
         return sum(((bid - q["entry"]) if q["side"] == BUY else (q["entry"] - bid - spr)) * q["lot"] * vpu
@@ -412,12 +516,17 @@ def simulate(cands: dict, p: pd.DataFrame, sym, vpu: float, cfg, rm, balance0: f
                     open_pos.append(dict(side=side, R=R, exit_idx=exit_idx, entry=entry, lot=lot, open_idx=k,
                                          reason=reason, risk=abs(entry - sl0) * lot * vpu, tier=tier["name"]))
         for q in [q for q in open_pos if q["exit_idx"] == k]:
-            pnl = q["R"] * q["risk"]
+            nights = (datetime.fromtimestamp(int(tt[k]), tz=timezone.utc).date()
+                      - datetime.fromtimestamp(int(tt[q["open_idx"]]), tz=timezone.utc).date()).days
+            # shortcut: sin el swap triple del miércoles; subestima ~1/7 del swap en posiciones de varios días
+            cost = trade_cost(q["lot"], sym.point, vpu, comm, slip) - swaps[q["side"]] * sym.point * q["lot"] * vpu * nights
+            pnl = q["R"] * q["risk"] - cost
             balance += pnl
             day_realized += pnl
             trades.append(dict(side="BUY" if q["side"] == BUY else "SELL", open_time=int(tt[q["open_idx"]]),
-                               close_time=int(tt[k]), lot=q["lot"], pnl=round(pnl, 2), r=round(q["R"], 3),
-                               reason=q["reason"], bars=k - q["open_idx"] + 1, tier=q["tier"]))
+                               close_time=int(tt[k]), lot=q["lot"], pnl=round(pnl, 2),
+                               r=round(pnl / q["risk"], 3) if q["risk"] else 0.0, r_gross=round(q["R"], 3),
+                               cost=round(cost, 4), reason=q["reason"], bars=k - q["open_idx"] + 1, tier=q["tier"]))
             open_pos.remove(q)
         curve.append((int(tt[k]), balance + unrealized(c[k], sp[k])))
     return trades, curve, blocked
@@ -628,6 +737,16 @@ def _classifier():
                                           min_samples_leaf=40, l2_regularization=1.0, random_state=0)
 
 
+def calibration(p: np.ndarray, y: np.ndarray) -> dict:
+    """Calidad probabilística fuera de muestra: Brier y log-loss del modelo frente a la tasa base
+    (predecir siempre la frecuencia de aciertos). Un modelo útil tiene brier < brier_base."""
+    p, y = np.clip(np.asarray(p, float), 1e-6, 1 - 1e-6), np.asarray(y, float)
+    base = np.full_like(p, y.mean())
+    ll = lambda q: float(-np.mean(y * np.log(q) + (1 - y) * np.log(1 - q)))
+    return {"brier": round(float(np.mean((p - y) ** 2)), 4), "brier_base": round(float(np.mean((base - y) ** 2)), 4),
+            "logloss": round(ll(p), 4), "logloss_base": round(ll(np.clip(base, 1e-6, 1 - 1e-6)), 4), "n": int(len(y))}
+
+
 def walk_forward(ev_i, X, t_dec, outs, tt, start_ts, end_ts, log=print):
     """
     ev_i: índices de las señales; X: features; t_dec: hora de decisión; outs[c]: outcomes por combo.
@@ -662,10 +781,12 @@ def walk_forward(ev_i, X, t_dec, outs, tt, start_ts, end_ts, log=print):
         clf = _classifier().fit(X[idx], R[c][idx] > 0)
         probs = clf.predict_proba(X[test])[:, 1] if len(test) else []
         sel = [j for j, pr in zip(test, probs) if pr >= tau and not np.isnan(R[c][j])]
+        ok = [k for k, j in enumerate(test) if not np.isnan(R[c][j])]
+        cal = calibration(np.asarray(probs)[ok], R[c][test[ok]] > 0) if ok else {}
         for j in sel:
             plan[int(ev_i[j])] = c
         folds.append({"test_from": _d(a), "test_to": _d(b), "combo": list(c), "tau": tau,
-                      "selected": len(sel), "signals": int(len(test))})
+                      "selected": len(sel), "signals": int(len(test)), **cal})
         last = (c, tau)
         log(f"    ventana {_d(a)}→{_d(b)}: SL/TP {c} τ={tau} → {len(sel)}/{len(test)} señales")
     final = None
@@ -695,6 +816,10 @@ def metrics(trades: list, curve: list, start_balance: float, with_daily: bool = 
         days = pd.Series([start_balance], index=pd.to_datetime([0], unit="s"))
     rets = days.pct_change().dropna()
     sharpe = float(rets.mean() / rets.std() * math.sqrt(252)) if len(rets) > 2 and rets.std() > 0 else 0.0
+    down = float(np.sqrt((np.minimum(rets, 0) ** 2).mean())) if len(rets) > 2 else 0.0     # desviación a la baja
+    sortino = float(rets.mean() / down * math.sqrt(252)) if down > 0 else 0.0
+    r_all = np.array([t["r"] for t in trades]) if trades else np.array([0.0])
+    costs = np.array([t.get("cost", 0.0) for t in trades]) if trades else np.array([0.0])
     years = (curve[-1][0] - curve[0][0]) / (365.25 * 86400) if len(curve) > 1 else 0.0
     final = float(eq[-1])
     pnl = np.array([t["pnl"] for t in trades]) if trades else np.array([])
@@ -720,7 +845,14 @@ def metrics(trades: list, curve: list, start_balance: float, with_daily: bool = 
         "start_balance": start_balance, "final_equity": round(final, 2),
         "net_return_pct": round((final / start_balance - 1) * 100, 2),
         "cagr_pct": round(((final / start_balance) ** (1 / years) - 1) * 100, 2) if final > 0 and years > 0.2 else None,
-        "max_drawdown_pct": round(max_dd * 100, 2), "sharpe": round(sharpe, 2),
+        "max_drawdown_pct": round(max_dd * 100, 2), "sharpe": round(sharpe, 2), "sortino": round(sortino, 2),
+        "net_expectancy_usd": round(float(pnl.mean()), 3) if len(pnl) else 0.0,
+        "cost_total": round(float(costs.sum()), 2), "cost_per_trade": round(float(costs.mean()), 4),
+        "r_dist": {"p5": round(float(np.percentile(r_all, 5)), 3), "p25": round(float(np.percentile(r_all, 25)), 3),
+                   "median": round(float(np.median(r_all)), 3), "p75": round(float(np.percentile(r_all, 75)), 3),
+                   "p95": round(float(np.percentile(r_all, 95)), 3),
+                   "hist": {f"{lo:+.1f}..{lo + 0.5:+.1f}": int(((r_all >= lo) & (r_all < lo + 0.5)).sum())
+                            for lo in np.arange(-3.0, 3.0, 0.5)}},       # huecos: R < −1 existe
         "trades": len(trades), "win_rate_pct": round(float((pnl > 0).mean() * 100), 1) if len(pnl) else 0.0,
         "profit_factor": round(gp / gl, 2) if gl > 0 else None,
         "expectancy_r": round(float(np.mean([t["r"] for t in trades])), 3) if trades else 0.0,
@@ -921,13 +1053,17 @@ def main():
     config, base = load_engine(a.profile, a.primary, a.symbol, overrides)
     from bot_engine import risk_manager as rm, trade_manager as tm, ml_filter
     d = prepare_data(config, a.primary, a.years, a.refresh, a.end,
-                     getattr(config, "GRID_EXEC_TF", None) if getattr(config, "USE_GRID", False) else None)
+                     getattr(config, "GRID_EXEC_TF", None) if getattr(config, "USE_GRID", False)
+                     else getattr(config, "ENTRY_EXEC_TF", None) or ("M1" if getattr(config, "ANOMALY_BLOCK", False) else None))
     p, frames, coverage, sym, vpu, info = d.p, d.frames, d.coverage, d.sym, d.vpu, d.info
     sym_name, start, end, first_idx = d.symbol, d.start, d.end, d.first_idx
     trend_tf, higher_tf = TF_MAP[a.primary]
     idx = list(range(first_idx, len(p) - 1))
     prof = profile_dir(a.profile).name
     tag = f"{prof}_{sym_name}_{a.primary}" + "".join(f"_{k}-{v}" for k, v in overrides.items()) + a.suffix
+    tag = re.sub(r"[^\w.+-]+", "", tag.replace("/", "-"))          # listas/regímenes: nombre de archivo válido
+    if len(tag) > 150:                                              # Windows: la ruta del reporte no pasa de 260
+        tag = f"{tag[:110]}_{hashlib.sha1(tag.encode()).hexdigest()[:8]}{a.suffix}"
     print(f"{tag} | {a.primary}/{trend_tf}/{higher_tf or '-'} | velas: {len(idx)} | cobertura: {coverage}", flush=True)
 
     # ── 1. Señales (caché por huella de código + config) ────────────────────────
@@ -963,13 +1099,48 @@ def main():
     sp_pts = p["spread"].to_numpy(float)
     if getattr(config, "BT_REAL_SPREAD", False):
         sp_pts = real_spread(sp_pts, p["time"].to_numpy(np.int64), p["close"].to_numpy(float), sym_name)
+    broker_sp = lambda pts: pts * float(getattr(config, "BT_SPREAD_MULT", 1.0)) + float(getattr(config, "BT_SPREAD_OFFSET_POINTS", 0.0))
+    sp_pts = broker_sp(sp_pts)                                         # perfil de otro bróker (sim_matrix)
     arr = tuple(p[k].to_numpy(float) for k in ("open", "high", "low", "close")) + (sp_pts * info.point,)
     hold = getattr(config, "MAX_HOLD_MINUTES", None)
-    outcome = make_outcome(arr, atr_at, sym, rm, tm, max(1, int(hold // TF_MIN[a.primary])) if hold else MAX_HOLD_BARS)
+    ex = None
+    if getattr(config, "ENTRY_EXEC_TF", None):                     # experimento: entrada afinada en un TF menor
+        from bot_engine.indicators import calc_ema
+        xdf = frames["x"][0]
+        x_pts = xdf["spread"].to_numpy(float)
+        if getattr(config, "BT_REAL_SPREAD", False):
+            x_pts = real_spread(x_pts, xdf["time"].to_numpy(np.int64), xdf["close"].to_numpy(float), sym_name)
+        x_pts = broker_sp(x_pts)
+        ex = NS(**{k: xdf[col].to_numpy(float) for k, col in (("o", "open"), ("h", "high"), ("l", "low"), ("c", "close"))},
+                sp=x_pts * info.point, t=xdf["time"].to_numpy(np.int64), t_prim=p["time"].to_numpy(np.int64),
+                e9=calc_ema(xdf["close"], 9).to_numpy(float), e21=calc_ema(xdf["close"], 21).to_numpy(float),
+                mode=getattr(config, "ENTRY_MODE", "market"), f=float(getattr(config, "ENTRY_PULLBACK_ATR", 0.25)))
+    outcome = make_outcome(arr, atr_at, sym, rm, tm,
+                           max(1, int(hold // TF_MIN[a.primary])) if hold else MAX_HOLD_BARS, ex)
     sides = np.where(ev["action"] == "BUY", BUY, SELL)
     combos = COMBOS if a.ml else COMBOS[:1]
     outs = {c: [outcome(int(i), int(s), *c) for i, s in zip(ev["i"], sides)] for c in combos}
-    filtered = {"rr": sum(o == "rr" for o in outs[COMBOS[0]]), "spread": sum(o == "spread" for o in outs[COMBOS[0]])}
+    filtered = {k: sum(o == k for o in outs[COMBOS[0]]) for k in ("rr", "spread", "noexec")}
+
+    regimes = regime_labels(p, getattr(config, "ADX_MIN_TREND", 20))
+    skip_reg = set(getattr(config, "SKIP_REGIMES", ()) or ())         # mismo filtro que core en vivo
+    anom_t = None
+    if getattr(config, "ANOMALY_BLOCK", False):                       # mismo filtro M1 que core._anomaly_now
+        from bot_engine.indicators import anomalous_bars
+        mdf = frames["x"][0]
+        f = anomalous_bars(mdf["high"], mdf["low"], float(getattr(config, "ANOMALY_RANGE_MULT", 3.0)),
+                           int(getattr(config, "ANOMALY_LOOKBACK", 20)))
+        anom_t = mdf["time"].to_numpy(np.int64)[f]                    # apertura de las velas M1 anómalas
+        cool_s = int(getattr(config, "COOLING_DOWN_PERIOD", 30)) * 60
+        t_open = p["time"].to_numpy(np.int64)
+
+    def anomalous(k):
+        """En vivo se miran las COOLING_DOWN_PERIOD velas M1 cerradas al abrir la vela de entrada k."""
+        if anom_t is None:
+            return False
+        t = t_open[k]
+        j = int(np.searchsorted(anom_t, t - 60, "right"))
+        return j > 0 and anom_t[j - 1] >= t - cool_s
 
     def cands_for(plan):
         """Velas de entrada → resultado. plan None = todas las señales con el SL/TP base."""
@@ -977,26 +1148,34 @@ def main():
         for j, (i, s) in enumerate(zip(ev["i"], sides)):
             c = COMBOS[0] if plan is None else plan.get(int(i))
             o = outs[c][j] if c in outs else None
-            if isinstance(o, tuple):
+            if isinstance(o, tuple) and str(regimes[int(i) + 1]) not in skip_reg and not anomalous(int(i) + 1):
                 out[int(i) + 1] = (int(s), o[0], o[1], o[2], o[3], o[4], float(atr_at[int(i)]),
                                    (c[1] or config.TP_ATR_MULT) / (c[0] or config.SL_ATR_MULT))
         return out
 
     tt = p["time"].to_numpy(np.int64)
+    comm, slip = getattr(config, "BT_COMMISSION_PER_LOT", 0.0), getattr(config, "BT_SLIPPAGE_POINTS", 0.0)
     report = {"profile": prof, "symbol": sym_name, "mode": "scalping" if TF_MIN[a.primary] < 60 else "swing",
               "tfs": [a.primary, trend_tf, higher_tf], "is_current_config": prof.startswith("xauusd") and a.primary == base,
               "period": [str(start.date()), str(end.date())], "coverage": coverage, "overrides": overrides,
               "signals": {"evaluated": len(idx), "BUY": int((ev.action == "BUY").sum()),
                           "SELL": int((ev.action == "SELL").sum()), "filtered": filtered},
-              "value_per_price_unit_per_lot": vpu,
-              "not_simulated": ["filtro de noticias", "order-flow", "DXY", "swaps", "comisiones", "margen"]}
+              "value_per_price_unit_per_lot": vpu, "engine_hash": engine_hash(a.profile, overrides),
+              "costs": {"spread": "real por hora" if getattr(config, "BT_REAL_SPREAD", False) else "mínimo de la vela",
+                        "commission_per_lot": comm, "slippage_points_per_side": slip,
+                        "swap_points_long_short": [getattr(config, "BT_SWAP_LONG_POINTS", 0.0), getattr(config, "BT_SWAP_SHORT_POINTS", 0.0)],
+                        "skip_regimes": sorted(skip_reg)},
+              "not_simulated": ["filtro de noticias", "order-flow", "DXY", "margen"]
+                               + ([] if getattr(config, "BT_SWAP_LONG_POINTS", 0.0) else ["swaps"])
+                               + ([] if comm else ["comisiones"]) + ([] if slip else ["slippage"])}
 
     def run_balances(key, cands, start_k):
         report[key] = {}
         for bal in balances:
             trades, curve, blocked = simulate(cands, p, sym, vpu, config, rm, bal, start_k, outcome)
             m = report[key][f"{bal:.0f}"] = {**metrics(trades, curve, bal, with_daily=f"{bal:.0f}" == top_bal),
-                                             "blocked": blocked, "split": split_stats(trades, t_split)}
+                                             "blocked": blocked, "split": split_stats(trades, t_split),
+                                             "by_regime": regime_stats(trades, regimes, tt)}
             print(f"  {key:<8} {bal:>8,.0f} → {m['verdict']:<15} op {m['trades']:>5} | acierto {m['win_rate_pct']:>5}% | "
                   f"PF {m['profit_factor']} | neto {m['net_return_pct']:+.1f}% | DD {m['max_drawdown_pct']:.1f}%", flush=True)
             if f"{bal:.0f}" == top_bal and a.mc:

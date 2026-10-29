@@ -23,7 +23,8 @@ MT5_PASSWORD = os.getenv('MT5_PASSWORD', '')               # Contraseña de la c
 MT5_SERVER   = os.getenv('MT5_SERVER', '')                 # Servidor del broker
 
 # ─── SÍMBOLO ───────────────────────────────────────────────────────────────────
-SYMBOL       = "XAUUSD"    # Puede variar por broker: GOLD, XAUUSD.
+SYMBOL       = "XAUUSD"    # nombre canónico: bot_engine.symbols lo resuelve por bróker (exacto, o el operable de menor spread que lo contenga: XAUUSD-ECN en la cuenta real). Fijar el nombre exacto para forzarlo
+SYMBOL_ALIASES = ("GOLD",)  # otros nombres del oro en algunos brókers (GOLD, GOLD.pro…)
 MAGIC_NUMBER = 20260618    # ID único para identificar los trades del bot
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
@@ -186,6 +187,9 @@ ENTRY_WINDOW_MIN = 15           # entrar solo en los 15 min tras el cierre de la
 ENTRY_RETRY_MIN  = 60           # pedido del usuario 2026-10-26: y en los 15 min tras cada cierre H1 mientras la señal H4 siga vigente (sin backtest)
 LATE_ENTRY_SCORE = 7.5          # pedido del usuario: señal muy fuerte (1.5× el mínimo de 5.0) entra aunque la vela ya arrancó (sin backtest)
 MAX_SLIPPAGE     = 30          # Mayor tolerancia al slippage en swing
+ORDER_FAIL_LIMIT = 3            # fallos de orden seguidos → SAFE_MODE (sin entradas hasta reiniciar y conciliar)
+STALE_TICK_SEC   = 600            # precio sin cambiar tanto tiempo → no abre (pausa diaria, feed caído)
+ML_FAIL_CLOSED   = True         # con USE_ML_FILTER, un modelo ausente o inválido bloquea entradas
 MAX_SPREAD_POINTS = 80         # Spread máx permitido (en puntos) para operar. Gold XM ≈ 30-50 normal;
                                # antes estaba fijo en 50 → bloqueaba TODOS los ciclos. Sube si tu broker
                                # tiene spread mayor; baja para ser más exigente con los costos.
@@ -200,7 +204,7 @@ USE_MACRO_CONTEXT    = True
 MACRO_TF_LABEL       = "W1"
 # Ajustes del backtest de 3 años (backtesting/engine_backtest.py, fuera de muestra):
 REQUIRE_MACRO_FOR_SELL = True   # ventas solo con W1 bajista: PF 1.69 → 1.78 (las ventas contra el macro perdían)
-USE_ML_FILTER          = True   # HGB walk-forward 2026-10-25: OOS 1 000 USD PF 1.03 → 1.31, acierto 82 %, DD 24 % (τ 0.675, SL 2.0 / TP 1.5)
+USE_ML_FILTER          = False  # 2026-10-27 etapa 3 (XAUUSD-ECN, comisión + swap reales): walk-forward OOS PF 1.09 sin ML → 0.90 con ML; Brier peor que la tasa base en 6/8 ventanas. Antes: True (2026-10-25, sin costes: 1.03 → 1.31)
 ML_FILTER_MAX_CAPITAL  = 500    # pedido del usuario 2026-10-26: con capital ≥ 500 USD sin filtro ML (backtest _bal: 500 PF 0.97 con ML vs 1.31 sin; 50/100 mejor con ML)
 # S/R parametrizado (reproduce exactamente el comportamiento previo del Oro):
 SR_CLUSTER_ATR_MULT  = 0.30   # tolerancia de agrupación = 0.30×ATR

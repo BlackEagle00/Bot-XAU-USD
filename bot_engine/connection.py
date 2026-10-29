@@ -121,7 +121,7 @@ def disconnect():
 def is_market_open() -> bool:
     """Verifica si hay liquidez disponible (spread razonable)."""
     tick = mt5.symbol_info_tick(SYMBOL)
-    if tick is None:
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:   # sin cotización (precio 0) no es "spread 0"
         return False
     info = mt5.symbol_info(SYMBOL)
     if info is None or info.point <= 0:

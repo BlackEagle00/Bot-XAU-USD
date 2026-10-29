@@ -75,6 +75,11 @@ def _get_events():
         if fetched is not None:
             _cache_events = fetched
             _cache_time   = now
+    # Un calendario de otra semana (la de ForexFactory empieza el domingo) o de hace >24 h no cubre hoy:
+    # se trata como "no disponible" en vez de dar "sin noticias" por bueno.
+    week = lambda d: (d + timedelta(days=1)).isocalendar()[:2]
+    if _cache_time is not None and (week(_cache_time) != week(now) or (now - _cache_time).total_seconds() > 86400):
+        return None
     return _cache_events
 
 

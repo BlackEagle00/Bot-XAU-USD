@@ -8,6 +8,7 @@ Indicadores incluidos:
 import pandas as pd
 import numpy as np
 from typing import Tuple, List
+import config as _cfg
 from config import (
     EMA_FAST, EMA_MED, EMA_SLOW, EMA_TREND,
     SMA_FAST, SMA_SLOW,
@@ -166,6 +167,15 @@ def calc_vwap(high: pd.Series, low: pd.Series,
     return (tp * vol).rolling(period).sum() / vol.rolling(period).sum()
 
 
+def calc_vwap_session(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    """VWAP acumulado desde el inicio del día (el índice es la hora del servidor de MT5).
+    El volumen es tick_volume: pondera por actividad del bróker, no por volumen real negociado."""
+    tp  = (high + low + close) / 3
+    vol = volume.replace(0, np.nan)
+    day = high.index.normalize()
+    return (tp * vol).groupby(day).cumsum() / vol.groupby(day).cumsum()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SOPORTE & RESISTENCIA
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -296,8 +306,8 @@ def calculate_all(df: pd.DataFrame, current_price: float) -> dict:
     bb_pct   = calc_bb_percent(c, bb_u, bb_l)
     bb_width = calc_bb_width(bb_u, bb_l, bb_m)
 
-    # — VWAP —
-    vwap = calc_vwap(h, lo, c, v)
+    # — VWAP — (VWAP_SESSION, experimental: anclado al día del SERVIDOR, que es lo que traen las velas de MT5)
+    vwap = calc_vwap_session(h, lo, c, v) if getattr(_cfg, "VWAP_SESSION", False) else calc_vwap(h, lo, c, v)
 
     # — Volumen MA —
     vol_ma = calc_sma(v, 20)
@@ -356,3 +366,28 @@ def calculate_all(df: pd.DataFrame, current_price: float) -> dict:
         "supports":      sr["supports"],
         "resistances":   sr["resistances"],
     }
+
+
+# Régimen de mercado (ADX × terciles de ATR%) — usado por el filtro SKIP_REGIMES y por las métricas del backtest
+def regime_labels(p: pd.DataFrame, adx_min: float, window: int = 2000, min_hist: int = 500, shift: int = 1) -> np.ndarray:
+    """Régimen de cada vela con datos CERRADOS hasta la anterior (sin mirar el futuro):
+    'tendencia'/'lateral' por ADX ≥ adx_min, y volatilidad 'baja'/'media'/'alta' por los terciles del ATR%
+    de las `window` velas previas. 'sin datos' mientras no haya `min_hist` velas de historia.
+    shift=0: la etiqueta de la vela SIGUIENTE a la última fila (vivo: las velas ya vienen sin la que se forma)."""
+    h, l, c = p["high"].astype(float), p["low"].astype(float), p["close"].astype(float)
+    adx = calc_adx(h, l, c).shift(shift)
+    atrp = (calc_atr(h, l, c) / c).shift(shift)
+    roll = atrp.rolling(window, min_periods=min_hist)
+    q1, q2 = roll.quantile(1 / 3), roll.quantile(2 / 3)
+    vol = np.where(atrp <= q1, "baja", np.where(atrp <= q2, "media", "alta"))
+    trend = np.where(adx >= adx_min, "tendencia", "lateral")
+    lab = np.char.add(np.char.add(trend.astype(str), "/"), vol.astype(str))
+    return np.where(q2.isna() | adx.isna(), "sin datos", lab)
+
+
+# Vela anómala (inyección de liquidez) — filtro ALTA_VOLATILIDAD_ANÓMALA de core y del backtest
+def anomalous_bars(high, low, mult: float, lookback: int = 20) -> np.ndarray:
+    """True en la vela cuyo rango supera `mult` × el rango medio de las `lookback` velas ANTERIORES (sin futuro)."""
+    rng = pd.Series(np.asarray(high, float) - np.asarray(low, float))
+    avg = rng.shift(1).rolling(lookback).mean()
+    return (rng > mult * avg).to_numpy()

@@ -62,8 +62,9 @@ def get_tick(symbol: str = None) -> Optional[mt5.Tick]:
     """Obtiene el tick actual (bid/ask en tiempo real). symbol=None → el del config."""
     symbol = symbol or SYMBOL
     tick = mt5.symbol_info_tick(symbol)
-    if tick is None:
-        logger.warning(f"No se pudo obtener tick para {symbol}")
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:   # el bróker puede dar precio 0 sin cotización (2026-10-27)
+        logger.warning(f"No se pudo obtener tick válido para {symbol}")
+        return None
     return tick
 
 

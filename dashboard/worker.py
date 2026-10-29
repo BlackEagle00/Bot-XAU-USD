@@ -27,6 +27,10 @@ os.chdir(HERE)                  # el log del perfil (dashboard_<modo>.log) queda
 
 import MetaTrader5 as mt5       # noqa: E402
 import config                   # noqa: E402  (perfil de la clase)
+from bot_engine.symbols import resolve_symbol   # noqa: E402
+_base_sym = config.SYMBOL
+config.SYMBOL = resolve_symbol(_base_sym, getattr(config, "SYMBOL_ALIASES", ()))   # antes de importar el motor
+config.SECTIONS = {k: [config.SYMBOL if s == _base_sym else s for s in v] for k, v in config.SECTIONS.items()}
 MODE = config.MODE
 GRID = MODE == "grid"           # perfil xauusd_grid: la orden abre una cesta (bot_engine/grid.py)
 from bot_engine.connection import connect                                   # noqa: E402
@@ -167,7 +171,7 @@ def analyze(sym: str, now: int) -> dict:
 
 
 def analyze_all() -> dict:
-    ticks = [mt5.symbol_info_tick(s) for s in ("XAUUSD",)]
+    ticks = [mt5.symbol_info_tick(s) for s in SYMBOLS]
     now = max([int(t.time) for t in ticks if t] or [int(time.time())])   # hora del servidor
     cards = {}
     for sym in SYMBOLS:

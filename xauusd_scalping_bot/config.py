@@ -27,7 +27,8 @@ MT5_PASSWORD = os.getenv('MT5_PASSWORD', '')               # Contraseña de la c
 MT5_SERVER   = os.getenv('MT5_SERVER', '')                 # Servidor del broker
 
 # ─── SÍMBOLO ───────────────────────────────────────────────────────────────────
-SYMBOL       = "XAUUSD"      # Puede variar por broker: GOLD, XAUUSD, XAUUSDm.
+SYMBOL       = "XAUUSD"    # nombre canónico: bot_engine.symbols lo resuelve por bróker (exacto, o el operable de menor spread que lo contenga: XAUUSD-ECN en la cuenta real). Fijar el nombre exacto para forzarlo
+SYMBOL_ALIASES = ("GOLD",)  # otros nombres del oro en algunos brókers (GOLD, GOLD.pro…)
 MAGIC_NUMBER = 20260621    # ID único — distinto a Oro swing (…618) y a los EUR/USD (…619/620)
 
 # ─── TEMPORALIDADES ────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ SR_24H_CANDLES = 96        # 96 velas M15 = 24h (rango del día en indicators.py
 
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
-MAX_OPEN_TRADES     = 3        # Con REQUIRE_TREND_ALIGNMENT todas van en la misma dirección
+MAX_OPEN_TRADES     = 1        # cuenta REAL de 55 USD, precaución máxima (pedido del usuario 2026-10-27); antes 3
 MAX_DAILY_LOSS_PCT  = 0.1     # 10% pérdida diaria → detener
 # ── SL/TP realistas para scalping de ORO ──────────────────────────────────────
 # El ATR de M15 en oro hoy ≈ $9. SL ajustado, pero TP con R:R sólido (2:1)
@@ -100,8 +101,17 @@ TRAIL_LOCK_FULL_ATR   = 2.7     # Llega al MAX cuando el profit alcanza 2.7×ATR
                                 # ¿Asegurar aún más rápido? Baja START y/o sube PCT_MIN.
 
 # ─── SEÑALES ───────────────────────────────────────────────────────────────────
-MIN_SIGNAL_SCORE    = 5.5      # Umbral algo más alto: el intradía genera más ruido, hay que filtrar más
-ATR_VOLATILITY_MIN  = 0.8      # ATR M15 de oro ≈ $3-10; filtra mercado plano. Si NUNCA opera, bájalo;
+MIN_SIGNAL_SCORE    = 6.5      # "las mejores operaciones" (usuario 2026-10-27). Backtest XAUUSD-ECN 3 años, spread real 11 pts, 1 trade, 1 000 USD: 5.5 PF 1.04 +97 % / 6.5 PF 1.06 (IS 1.06, OOS 1.05) +106 % / 7.5 PF 1.02 +23 %
+ATR_VOLATILITY_MAX  = 7.5      # TEMPORAL 2026-10-28 (usuario, tras la Fed): sin entradas si ATR M15 > p75 de 20 días (mediana 6.57). Quitar (None) cuando vuelva la normalidad. No simulado en backtest
+# 2026-10-28 (usuario): ALTA_VOLATILIDAD_ANÓMALA = vela M1 con rango > 3× la media de las 20 previas; sin entradas
+# COOLING_DOWN_PERIOD min. Regla de mechas >70 % descartada (29 % de las velas M1 → bloqueo permanente).
+# ANOMALY_BLOCK=False: solo informa ("⚡ (simulado)") hasta validarlo en backtest.
+USE_ANOMALY_FILTER  = True
+ANOMALY_BLOCK       = False
+ANOMALY_RANGE_MULT  = 3.0
+ANOMALY_LOOKBACK    = 20
+COOLING_DOWN_PERIOD = 30       # minutos
+ATR_VOLATILITY_MIN  = 0.8     # ATR M15 de oro ≈ $3-10; filtra mercado plano. Si NUNCA opera, bájalo;
                                # si entra en mercados muertos/laterales, súbelo (revisa el .log).
 REQUIRE_TREND_ALIGNMENT = True  # Solo operar a favor de la tendencia M15 (anti-contratendencia)
 REQUIRE_MACRO_ALIGNMENT = False # En scalping NO vetamos por H1 (mataría demasiadas entradas).
@@ -131,6 +141,11 @@ SCORE_WEIGHTS = {
 USE_ADX_FILTER  = True
 ADX_PERIOD      = 14
 ADX_MIN_TREND   = 18      # 15 probado 2026-10-26 (auditoría 8.4): +17 % operaciones pero OOS PF 1.12 → 1.06 y 1 000 USD +249 % → +157 %; revertido a pedido del usuario
+
+# Régimen (indicators.regime_labels: ADX × tercil del ATR% de las 2 000 velas previas). Etapa 3, 2026-10-27, con comisión real:
+# la volatilidad baja era la peor en IS (PF 0.97) y se confirmó en OOS (0.90). Saltarla: PF 1.04 → 1.10 (IS 1.08 / OOS 1.11),
+# DD 40.7 % → 23.7 %, Monte Carlo P(pérdida) 24 % → 4 %. Vacío () = sin filtro (vuelve a la línea base).
+SKIP_REGIMES    = ("tendencia/baja",)
 
 # ─── ORDER-FLOW — PRESIÓN COMPRADORA/VENDEDORA POR TICKS ────────────────────────
 # Proxy del "volumen de compra vs venta" con ticks recientes (en CFDs no hay volumen
@@ -179,11 +194,14 @@ CANDLES_HIGHER   = 500    # 500 velas H4 ≈ 3 meses de contexto
 
 # ─── BOT ───────────────────────────────────────────────────────────────────────
 LOOP_INTERVAL    = 15           # 15s entre ciclos: reaccionar rápido dentro de la vela M15
-LATE_ENTRY_SCORE = 8.25         # pedido del usuario 2026-10-26: señal muy fuerte (1.5× el mínimo de 5.5) entra aunque la vela ya arrancó (sin backtest)
+LATE_ENTRY_SCORE = 9.75         # pedido del usuario 2026-10-26: señal muy fuerte (1.5× el mínimo, hoy 6.5) entra aunque la vela ya arrancó (sin backtest)
 ENTRY_WINDOW_MIN = 5            # entrar solo en los 5 min tras el cierre de la vela M15 de la señal, 1 vez por vela (= backtest)
 MAX_HOLD_MINUTES = 120          # cerrar a los 120 min sin TP ni SL (como el tiempo máximo de las cestas del grid). Barrido _short 2026-10-26: IS PF 1.00 → 1.01, OOS 1.11 → 1.12, 1 000 USD +220 % → +249 %; 30 y 60 min empeoran
-DAILY_LOSS_ALERT_ONLY = True    # pedido del usuario 2026-10-26: al 80 % y al 100 % del límite diario AVISA (log + Telegram) y sigue operando; decide el usuario. Backtest: igual desde 500 USD, peor con 50-100 (PF 0.50 → 0.38)
+DAILY_LOSS_ALERT_ONLY = True    # pedido del usuario 2026-10-27 21:0x ("quitar el límite diario y seguir ejecutando"): el 10 % diario solo avisa. Antes False. Backtest 2026-10-26: con 50-100 USD cortar es mejor (PF 0.50 vs 0.38)
 MAX_SLIPPAGE     = 15            # Menor tolerancia: en scalping el slippage pesa más sobre el TP
+ORDER_FAIL_LIMIT = 3            # fallos de orden seguidos → SAFE_MODE (sin entradas hasta reiniciar y conciliar)
+STALE_TICK_SEC   = 120            # precio sin cambiar tanto tiempo → no abre (pausa diaria, feed caído)
+ML_FAIL_CLOSED   = True         # con USE_ML_FILTER, un modelo ausente o inválido bloquea entradas
 MAX_SPREAD_POINTS = 40          # backtest con spread REAL (ticks, auditoría 8.5): 40 > 20 (20 quiebra in-sample; 40 OOS PF 1.15, 1 000 USD +86 %). Bróker ~36 pts de mediana, 43-58 de madrugada
                                 # necesitó 80 para operar. 70 es algo más exigente (protege el TP corto)
                                 # sin bloquear todo. Si NUNCA opera, súbelo; si quieres entradas más
@@ -212,6 +230,7 @@ MICRO_SL_FIT      = False
 MICRO_MIN_SL_ATR  = 0.5
 MAX_RISK_MIN_LOT  = 0.15
 ENFORCE_CAPITAL_LEVEL = False   # 2026-10-26, pedido del usuario: nivel de cuenta solo informa; con poco capital opera al lote
+MIN_LOT_CAP_HARD  = True        # 2026-10-28 (usuario): rechaza (TRADE_REJECTED) si el lote mínimo arriesga > MAX_RISK_MIN_LOT (15 %), sin activar los niveles de cuenta
                                 # mínimo marcado "riesgo elevado" (hoy ≈ 14 USD de stop). El grid lo hereda.
 MAX_DD_PCT        = 0.50
 # ↑ Elegidos con backtesting/small_account.py (2026-10-23, último año, arranques de 90 días; regla fijada antes):

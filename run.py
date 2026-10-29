@@ -6,6 +6,7 @@ Uso:
     python run.py oro              # ejecuta directo el bot de Oro (swing H4/D1/W1)
     python run.py oro_scalping     # ejecuta directo el bot de Oro (scalping M15/H1/H4)
     python run.py dashboard        # panel web local (http://127.0.0.1:8765)
+    python run.py sim_parallel     # sombra Balance × Bróker del scalping (sin órdenes reales)
 """
 import subprocess
 import sys
@@ -32,6 +33,12 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1].strip().lower() == "dashboard":
         try:   # panel web: http://127.0.0.1:8765
             subprocess.run([sys.executable, str(ROOT / "dashboard" / "server.py")], cwd=str(ROOT))
+        except KeyboardInterrupt:
+            pass
+        return
+    if len(sys.argv) > 1 and sys.argv[1].strip().lower() == "sim_parallel":
+        try:   # proceso aparte; las órdenes de MT5 quedan anuladas dentro del script
+            subprocess.run([sys.executable, str(ROOT / "sim_parallel" / "sim_parallel.py"), *sys.argv[2:]], cwd=str(ROOT))
         except KeyboardInterrupt:
             pass
         return
