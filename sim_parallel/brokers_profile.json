@@ -1,0 +1,9 @@
+{
+  "_nota": "Perfiles ILUSTRATIVOS (no son datos de brókers reales); edítalos. spread final = spread real × spread_multiplier + fixed_spread_offset_points (pts de 0.01). commission_per_lot = USD por lote ida y vuelta. execution_delay_ms: la sombra en vivo toma el tick real tras ese retraso. slippage_points: solo la matriz histórica (por lado).",
+  "profiles": [
+    {"name": "VT_ACTUAL",   "spread_multiplier": 1.0, "fixed_spread_offset_points": 0,  "commission_per_lot": 6.0, "execution_delay_ms": 0,   "slippage_points": 0},
+    {"name": "SPREAD_ALTO", "spread_multiplier": 2.5, "fixed_spread_offset_points": 0,  "commission_per_lot": 7.0, "execution_delay_ms": 300, "slippage_points": 5},
+    {"name": "RETAIL_STD",  "spread_multiplier": 1.0, "fixed_spread_offset_points": 20, "commission_per_lot": 0.0, "execution_delay_ms": 150, "slippage_points": 3},
+    {"name": "ECN_LENTO",   "spread_multiplier": 1.0, "fixed_spread_offset_points": 0,  "commission_per_lot": 7.0, "execution_delay_ms": 800, "slippage_points": 8}
+  ]
+}
