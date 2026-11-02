@@ -537,14 +537,15 @@ def generate_signal(
     # En swing trading solo operamos a favor de la tendencia dominante.
     # Un BUY en tendencia bajista o SELL en tendencia alcista aumenta el riesgo.
     if REQUIRE_TREND_ALIGNMENT and action != "HOLD":
+        tf = getattr(_cfg, "TF_LABELS", "").split("/")[0] or "TF principal"   # la tendencia sale de ind_primary, no de H1
         if trend == "up" and action == "SELL":
             reasons.append(
-                f"⛔ SELL bloqueado: tendencia H1 alcista — solo BUY permitido"
+                f"⛔ SELL bloqueado: tendencia {tf} alcista — solo BUY permitido"
             )
             action = "HOLD"
         elif trend == "down" and action == "BUY":
             reasons.append(
-                f"⛔ BUY bloqueado: tendencia H1 bajista — solo SELL permitido"
+                f"⛔ BUY bloqueado: tendencia {tf} bajista — solo SELL permitido"
             )
             action = "HOLD"
 

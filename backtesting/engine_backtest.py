@@ -60,9 +60,9 @@ SIG_VERSION = 3    # formato del caché de señales (2: + tendencia del TF super
 POST_KEYS = {"MAX_RISK_MIN_LOT", "MICRO_SL_FIT", "MICRO_MIN_SL_ATR", "GRID_EXEC_TF", "MAX_HOLD_MINUTES", "DAILY_LOSS_ALERT_ONLY",
              "MAX_SPREAD_POINTS", "BT_REAL_SPREAD", "BT_COMMISSION_PER_LOT", "BT_SLIPPAGE_POINTS",
              "BT_SWAP_LONG_POINTS", "BT_SWAP_SHORT_POINTS", "SKIP_REGIMES",
-             "ENTRY_EXEC_TF", "ENTRY_MODE", "ENTRY_PULLBACK_ATR", "MIN_LOT_CAP_HARD",
+             "ENTRY_EXEC_TF", "ENTRY_MODE", "ENTRY_PULLBACK_ATR", "MIN_LOT_CAP_HARD", "BT_FIXED_SL_PRICE", "BT_FIXED_TP_PRICE",
              "ANOMALY_BLOCK", "ANOMALY_RANGE_MULT", "ANOMALY_LOOKBACK", "COOLING_DOWN_PERIOD",
-             "BT_SPREAD_MULT", "BT_SPREAD_OFFSET_POINTS"}
+             "BT_SPREAD_MULT", "BT_SPREAD_OFFSET_POINTS", "M30_FILTER"}
 
 # (SL, TP) en múltiplos de ATR. (None, None) = los del config. TP < SL sube el acierto y baja la ganancia por operación.
 COMBOS = [(None, None), (1.5, 0.5), (1.5, 0.75), (1.5, 1.0), (2.0, 0.5), (2.0, 0.75), (2.0, 1.0), (2.0, 1.5)]
@@ -359,6 +359,10 @@ def make_outcome(arr, atr_at, sym, rm, tm, max_bars: int = MAX_HOLD_BARS, ex=Non
     def outcome(i, side, slm, tpm):
         k = i + 1
         action = "BUY" if side == BUY else "SELL"
+        fs, ft = getattr(rm._cfg, "BT_FIXED_SL_PRICE", None), getattr(rm._cfg, "BT_FIXED_TP_PRICE", None)
+        if fs or ft:                                     # experimento: SL/TP en distancia fija de precio (pips)
+            slm = fs / atr_at[i] if fs else slm
+            tpm = ft / atr_at[i] if ft else tpm
         px = entry_price(side, o[k], sp[k])
         sl, tp = rm.calculate_sl_tp(action, px, atr_at[i], sym, slm, tpm)
         if not rm.check_risk_reward(px, sl, tp, tpm / slm * 0.9 if slm else None)[0]:
@@ -939,7 +943,8 @@ def prepare_data(config, primary: str, years: float, refresh: bool = False, end:
 
     frames, coverage = {}, {}
     for key, tf, n in (("p", primary, config.CANDLES_PRIMARY), ("t", trend_tf, config.CANDLES_TREND),
-                       ("h", higher_tf, config.CANDLES_HIGHER), ("x", exec_tf if exec_tf != primary else None, 200)):
+                       ("h", higher_tf, config.CANDLES_HIGHER), ("x", exec_tf if exec_tf != primary else None, 200),
+                       ("m", "M30" if getattr(config, "M30_FILTER", None) else None, 250)):
         if tf is None:
             frames[key] = None
             continue
@@ -1142,13 +1147,28 @@ def main():
         j = int(np.searchsorted(anom_t, t - 60, "right"))
         return j > 0 and anom_t[j - 1] >= t - cool_s
 
+    m30_dir = None
+    if getattr(config, "M30_FILTER", None):                          # experimento: M30 debe ir a favor de la señal
+        from bot_engine.indicators import calc_ema
+        mdf, m_close = frames["m"]
+        slow = {"ema21": 21, "ema50": 50}[config.M30_FILTER]
+        m30_dir = np.sign(calc_ema(mdf["close"], 9).to_numpy(float) - calc_ema(mdf["close"], slow).to_numpy(float))
+        t_open_k = p["time"].to_numpy(np.int64)
+
+    def m30_against(k, s):
+        """Última vela M30 CERRADA al abrir la vela de entrada k: BUY exige EMA9 > lenta, SELL EMA9 < lenta."""
+        if m30_dir is None:
+            return False
+        n = closed_upto(m_close, int(t_open_k[k]))
+        return n == 0 or m30_dir[n - 1] != (1 if s == BUY else -1)
+
     def cands_for(plan):
         """Velas de entrada → resultado. plan None = todas las señales con el SL/TP base."""
         out = {}
         for j, (i, s) in enumerate(zip(ev["i"], sides)):
             c = COMBOS[0] if plan is None else plan.get(int(i))
             o = outs[c][j] if c in outs else None
-            if isinstance(o, tuple) and str(regimes[int(i) + 1]) not in skip_reg and not anomalous(int(i) + 1):
+            if isinstance(o, tuple) and str(regimes[int(i) + 1]) not in skip_reg and not anomalous(int(i) + 1)                     and not m30_against(int(i) + 1, int(s)):
                 out[int(i) + 1] = (int(s), o[0], o[1], o[2], o[3], o[4], float(atr_at[int(i)]),
                                    (c[1] or config.TP_ATR_MULT) / (c[0] or config.SL_ATR_MULT))
         return out

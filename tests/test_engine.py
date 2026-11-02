@@ -156,6 +156,8 @@ def test_sim_parallel_never_sends_orders_and_sizes_per_balance():
         vt = {"spread_multiplier": 1.0, "fixed_spread_offset_points": 0}
         d = sp.decide(100, vt, "BUY", 4000.0, 4000.10, 11.8, SYM)            # SL 17.7 > 15 % de 100
         assert d["estado"] == "TRADE_REJECTED" and d["lot"] == 0
+        d = sp.decide(100, vt, "BUY", 4000.0, 4000.10, 11.8, SYM, free=True)   # pista VETO libre: lote mínimo
+        assert d["estado"] == "EJECUTADA" and d["lot"] == SYM.volume_min
         d = sp.decide(5000, vt, "SELL", 4000.0, 4000.10, 20 / 3, SYM)        # SL 10 → 1 % de 5 000 = 0.05 lote
         assert d["estado"] == "EJECUTADA" and d["lot"] == 0.05 and d["entry"] == 4000.0
         d = sp.decide(5000, {"spread_multiplier": 5.0}, "BUY", 4000.0, 4000.10, 10, SYM)   # 10 pts × 5 = 50 ≥ 40
@@ -165,6 +167,14 @@ def test_sim_parallel_never_sends_orders_and_sizes_per_balance():
         assert sp.walk(pos, [(0, 100.5, 99.5, 100.2, 10)], 0.01, vt, 60)[:2] == (100.2, "TIEMPO")
         sell = {"side": "SELL", "entry": 100.0, "sl": 101.0, "tp": 98.0, "t0": 0}
         assert sp.walk(sell, [(0, 100.95, 99.5, 100, 10)], 0.01, vt, 7200)[:2] == (101.0, "SL")   # ASK = high + spread
+        import tempfile
+        log = Path(tempfile.mkdtemp()) / "bot.log"                           # vetos ⛔: 1 por vela M15, solo en la ventana
+        line = ("[2026-10-29 08:{}:36] INFO     | 📊 HOLD | Score:  -8.51 | ADX:11 | Tendencia: down | ATR: 8.355 "
+                "| ⛔ SELL bloqueado: ADX 11 < 18 (mercado lateral)\n")
+        log.write_text("".join(line.format(m) for m in ("45", "46", "52")), encoding="utf-8")
+        v, pos = sp.read_vetoes(log, 0, 5)
+        assert [x["id"] for x in v] == ["VETO-202610290845"] and v[0]["action"] == "SELL" and v[0]["atr"] == 8.355
+        assert v[0]["veto"] == "⛔ ADX 11 < 18" and pos == log.stat().st_size
     finally:
         for f, v in keep.items():
             setattr(mt5, f, v) if v else delattr(mt5, f)
@@ -284,6 +294,20 @@ def test_backtest_time_stop_exits_by_time():
     arr = (np.full(n, 100.0), np.full(n, 100.05), np.full(n, 99.95), np.full(n, 100.0), np.zeros(n))
     out = bt.make_outcome(arr, np.full(n, 1.0), SYM, rm, tm, max_bars=2)(0, bt.BUY, 1.5, 3.0)
     assert out[4] == "TIEMPO" and out[1] == 2                      # entra en la vela 1, sale al cierre de la 2
+
+
+def test_backtest_fixed_pips_sl_tp():
+    import numpy as np
+    bt = _backtest_module()
+    n = 10
+    arr = (np.full(n, 100.0), np.full(n, 100.05), np.full(n, 99.95), np.full(n, 100.0), np.zeros(n))
+    arr[1][2] = 103.5                                               # la vela 2 llega a +3.5: toca un TP fijo de 3.0
+    try:
+        rm._cfg.BT_FIXED_SL_PRICE, rm._cfg.BT_FIXED_TP_PRICE = 3.0, 3.0   # 30/30 pips con ATR 8 (≠ 1.5/3 × ATR)
+        out = bt.make_outcome(arr, np.full(n, 8.0), SYM, rm, tm, max_bars=5)(0, bt.BUY, None, None)
+        assert abs(out[2] - out[3] - 3.0) < 1e-6 and out[4] == "TP" and abs(out[0] - 1.0) < 1e-6, out
+    finally:
+        del rm._cfg.BT_FIXED_SL_PRICE, rm._cfg.BT_FIXED_TP_PRICE
 
 
 
