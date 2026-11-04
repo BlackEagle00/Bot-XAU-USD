@@ -40,9 +40,10 @@ import config as _cfg
 # COMPONENTES INDIVIDUALES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _determine_trend(ind: dict) -> str:
+def _determine_trend(ind: dict, slow: str = "ema50") -> str:
     """
     Determina la tendencia de fondo con las EMAs.
+    slow = EMA de la regla parcial (EMA9 vs slow); "ema21" gira antes tras un rango (experimento TREND_PARTIAL_EMA).
     Returns: "up" | "down" | "neutral"
     """
     e9, e21, e50, e200 = (
@@ -56,9 +57,10 @@ def _determine_trend(ind: dict) -> str:
     if e9 < e21 < e50 and e50 < e200:
         return "down"
     # Tendencia parcial
-    if e9 > e50:
+    ref = ind.get(slow, e50)
+    if e9 > ref:
         return "up"
-    if e9 < e50:
+    if e9 < ref:
         return "down"
     return "neutral"
 
@@ -461,7 +463,7 @@ def generate_signal(
             "atr": atr, "trend": "neutral", "breakdown": {}
         }
 
-    trend = _determine_trend(ind_primary)
+    trend = _determine_trend(ind_primary, f"ema{getattr(_cfg, 'TREND_PARTIAL_EMA', 50)}")   # experimento, sin clave = 50
     w = SCORE_WEIGHTS
 
     # ── Puntuaciones individuales (TF primario) ───────────────────────────────

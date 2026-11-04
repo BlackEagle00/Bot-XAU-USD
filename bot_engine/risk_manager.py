@@ -432,6 +432,17 @@ def can_open_trade(action: str, symbol: str = None) -> Tuple[bool, str]:
     open_pos = [p for p in every if p.magic == MAGIC_NUMBER]
     if len(open_pos) >= tier["max_open"]:
         return False, f"Máximo de trades abiertos ({tier['max_open']}, nivel {tier['name']}) alcanzado"
+    # Nunca una posición contra otra del bot en el mismo símbolo (cuenta hedging: BUY + SELL = solo comisión)
+    against = mt5.ORDER_TYPE_SELL if action == "BUY" else mt5.ORDER_TYPE_BUY
+    if any(p.type == against and p.symbol == (symbol or SYMBOL) for p in open_pos):
+        return False, f"{action} bloqueado: hay una posición contraria abierta del bot"
+    # Más operaciones solo si las anteriores ya están protegidas (SL en BE+ o mejor): riesgo abierto ≤ N stops
+    cap = getattr(_cfg, "MAX_UNPROTECTED_TRADES", None)
+    if cap is not None:
+        safe = lambda p: getattr(p, "sl", 0) and ((p.sl >= p.price_open) if p.type == mt5.ORDER_TYPE_BUY else (p.sl <= p.price_open))
+        exposed = sum(1 for p in open_pos if not safe(p))
+        if exposed >= cap:
+            return False, f"{action} en espera: {exposed} posiciones del bot aún sin BE+ (máx {cap} a riesgo a la vez)"
 
     # 3. Margen libre
     if acc.balance > 0 and (acc.margin_free / acc.balance) < 0.10:

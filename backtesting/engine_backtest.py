@@ -62,7 +62,8 @@ POST_KEYS = {"MAX_RISK_MIN_LOT", "MICRO_SL_FIT", "MICRO_MIN_SL_ATR", "GRID_EXEC_
              "BT_SWAP_LONG_POINTS", "BT_SWAP_SHORT_POINTS", "SKIP_REGIMES",
              "ENTRY_EXEC_TF", "ENTRY_MODE", "ENTRY_PULLBACK_ATR", "MIN_LOT_CAP_HARD", "BT_FIXED_SL_PRICE", "BT_FIXED_TP_PRICE",
              "ANOMALY_BLOCK", "ANOMALY_RANGE_MULT", "ANOMALY_LOOKBACK", "COOLING_DOWN_PERIOD",
-             "BT_SPREAD_MULT", "BT_SPREAD_OFFSET_POINTS", "M30_FILTER"}
+             "BT_SPREAD_MULT", "BT_SPREAD_OFFSET_POINTS", "M30_FILTER",
+             "USE_TRAILING_STOP", "USE_BREAKEVEN", "USE_PROGRESSIVE_TRAIL", "BE_TRIGGER_PCT"}   # gestión de la posición: no cambia las señales
 
 # (SL, TP) en múltiplos de ATR. (None, None) = los del config. TP < SL sube el acierto y baja la ganancia por operación.
 COMBOS = [(None, None), (1.5, 0.5), (1.5, 0.75), (1.5, 1.0), (2.0, 0.5), (2.0, 0.75), (2.0, 1.0), (2.0, 1.5)]

@@ -60,7 +60,8 @@ SR_24H_CANDLES = 96        # 96 velas M15 = 24h (rango del día en indicators.py
 
 # ─── GESTIÓN DE RIESGO ─────────────────────────────────────────────────────────
 RISK_PER_TRADE      = 0.01     # 1% del balance por operación
-MAX_OPEN_TRADES     = 1        # cuenta REAL de 55 USD, precaución máxima (pedido del usuario 2026-10-27); antes 3
+MAX_OPEN_TRADES     = 5        # 2026-11-03 08:20 (usuario: "puedes dejar hasta 5 operaciones activas, pero no necesariamente se deben abrir las 5"); antes 2
+MAX_UNPROTECTED_TRADES = 2     # 2026-11-03: la 3.ª+ solo se abre si las demás ya tienen el SL en BE+ o mejor → nunca más de 2 stops a riesgo
 MAX_DAILY_LOSS_PCT  = 0.1     # 10% pérdida diaria → detener
 # ── SL/TP realistas para scalping de ORO ──────────────────────────────────────
 # El ATR de M15 en oro hoy ≈ $9. SL ajustado, pero TP con R:R sólido (2:1)
@@ -72,12 +73,12 @@ MIN_RR              = 1.8      # R:R real mínimo (permite leve deformación del
 MIN_LOT             = 0.01     # Lote mínimo absoluto
 MAX_LOT             = 3.0      # Lote máximo absoluto
 BREAKEVEN_ATR_MULT  = 1.0      # (FALLBACK) Solo se usa si la posición NO tiene TP definido.
-BE_TRIGGER_PCT      = 0.55     # Mover a BE+ cuando el precio recorra ≥ 55% del camino entrada→TP
+BE_TRIGGER_PCT      = 0.35     # 2026-11-03 08:20 (usuario: "aplica BE 0.35"; backtest _mg_be35 PF 1.12, DD 3 años 22.8 % vs 24.9 % con 0.55). Antes 0.55
                                # (regla 50-70%, calza bien en scalping). Baja para proteger antes.
 BE_PLUS_POINTS      = 5        # "BE+": margen EXTRA (puntos) además del spread. SL queda en:
                                #   entrada ∓ (spread_actual + BE_PLUS_POINTS×point) → sale en positivo.
 TRAILING_ATR_MULT   = 1.0      # Trailing ajustado: sigue de cerca al precio
-USE_TRAILING_STOP   = True     # Activar trailing stop
+USE_TRAILING_STOP   = True     # 2026-11-03 09:00 (usuario: "vuelve a poner el trailing con BE 0.35"). Antes False (04:50, solo BE + 120 min)
 USE_BREAKEVEN       = True     # Activar break-even automático
 USE_ANTI_DUPLICATE  = True     # Exige separación mínima entre entradas de la misma dirección
 ANTI_DUP_ATR_MULT   = 0.75     # Distancia mínima (en ATR) entre entradas misma dirección. Antes 0.5
@@ -92,7 +93,7 @@ ANTI_DUP_ATR_MULT   = 0.75     # Distancia mínima (en ATR) entre entradas misma
 # arranca flojo (deja correr la tendencia) y se aprieta hacia ~1:1 conforme el trade
 # avanza, para que un retroceso salga en POSITIVO en vez de en pérdida.
 # En cada ciclo el trailing aplica el SL MÁS protector entre el ATR clásico y este lock.
-USE_PROGRESSIVE_TRAIL = True    # Activar el lock progresivo de ganancia
+USE_PROGRESSIVE_TRAIL = True    # 2026-11-03 09:00 junto con USE_TRAILING_STOP (ver arriba). Antes False
 TRAIL_LOCK_START_ATR  = 1.0     # Empezar a asegurar profit cuando éste supere 1.0×ATR (≈ 1/3 del TP)
 TRAIL_LOCK_PCT_MIN    = 0.40    # Al arrancar asegura el 40% del profit (scalping → protege más rápido)
 TRAIL_LOCK_PCT_MAX    = 0.90    # Tope: asegura hasta el 90% del profit (≈ 1:1) en trades maduros
@@ -119,8 +120,8 @@ REQUIRE_MACRO_ALIGNMENT = False # En scalping NO vetamos por H1 (mataría demasi
                                 # Pon True si quieres que el H1 fuerte bloquee scalps en su contra.
 # Anti-agotamiento: no abrir NUEVAS entradas en extremos de RSI (vender el suelo /
 # comprar el techo), donde el movimiento suele agotarse y revertir.
-RSI_NO_SELL_BELOW   = 30      # No abrir SELL si el RSI M15 ≤ 30 (sobrevendido → posible suelo)
-RSI_NO_BUY_ABOVE    = 70      # No abrir BUY  si el RSI M15 ≥ 70 (sobrecomprado → posible techo)
+RSI_NO_SELL_BELOW   = 25      # 2026-11-03 11:0x (usuario: "Aplicar 25/75"; backtest _mg_tr35x5_rsi2575 PF 1.14/1.18 vs 1.10/1.10; vecinos 24/76 y 27/73 ≥ 1.12). Antes 30
+RSI_NO_BUY_ABOVE    = 75      # 2026-11-03 11:0x junto con RSI_NO_SELL_BELOW (ver arriba). Antes 70
 SCORE_WEIGHTS = {
     "ema":      1.3,    # ↑ Alineación EMA sigue siendo lo más importante
     "rsi":      1.0,    # ↑ RSI en M15 es clave para timing de entrada

@@ -13,7 +13,7 @@ _R = r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Gi
 sys.path[:0] = [_R + r"\xauusd_scalping_bot", _R]          # indicators importa el config del bot
 from bot_engine.indicators import calc_atr, calc_ema, calc_rsi  # noqa: E402
 
-SYM, SINCE, PT = "XAUUSD-ECN", "2026-11-01 00:00", 0.01
+SYM, SINCE, PT = "XAUUSD-ECN", "2026-11-02 00:00", 0.01
 sig, atr = [], None
 with open(_R + r"\xauusd_scalping_bot\xauusd_scalping_bot.log", encoding="utf-8", errors="replace") as f:
     for line in f:

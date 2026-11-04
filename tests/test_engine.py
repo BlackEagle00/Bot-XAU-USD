@@ -364,6 +364,23 @@ def test_closed_position_plays_sound_even_without_telegram():
 def test_trailing_does_not_tighten_while_losing():
     moves = []
     tm._modify_sl = lambda ticket, sl, tp, digits: moves.append(sl) or True
+    saved, tm.USE_TRAILING_STOP = tm.USE_TRAILING_STOP, True   # el config del oro lo apagó (2026-11-03); se prueba la lógica
+    try:
+        _trailing_cases(moves)
+    finally:
+        tm.USE_TRAILING_STOP = saved
+
+
+def test_trailing_off_never_moves_sl():
+    sell = NS(ticket=1, type=mt5.ORDER_TYPE_SELL, price_open=4138.84, sl=4145.42, tp=4124.62, price_current=4120.0)
+    saved, tm.USE_TRAILING_STOP = tm.USE_TRAILING_STOP, False
+    try:
+        assert not tm.update_trailing_stop(sell, 4.623, SYM)
+    finally:
+        tm.USE_TRAILING_STOP = saved
+
+
+def _trailing_cases(moves):
     atr = 4.623
     sell = NS(ticket=1, type=mt5.ORDER_TYPE_SELL, price_open=4138.84, sl=4145.42,
               tp=4124.62, price_current=4138.00)
@@ -1161,6 +1178,42 @@ def test_can_open_trade_blocks_when_positions_unreadable():
         restore()
 
 
+def test_can_open_trade_never_opposes_own_position():
+    saved = (rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped, rm.MAX_OPEN_TRADES, rm.get_account_info)
+    rm.is_daily_loss_exceeded, rm.MAX_OPEN_TRADES = (lambda: False), 3
+    rm.get_account_info = lambda: NS(balance=1000, equity=1000, margin_free=1000, margin=0)   # nivel con 2+ abiertas
+    sell = NS(type=mt5.ORDER_TYPE_SELL, symbol=rm.SYMBOL, magic=rm.MAGIC_NUMBER)
+    restore = _mt5(positions_get=lambda *a, **k: [sell],
+                   account_info=lambda: NS(balance=100, equity=100, margin_free=100, margin=0))
+    try:
+        ok, why = rm.can_open_trade("BUY")
+        assert not ok and "contraria" in why                               # no se cubre a sí mismo
+        ok, why = rm.can_open_trade("SELL")
+        assert ok, why                                                     # misma dirección sí
+    finally:
+        rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped, rm.MAX_OPEN_TRADES, rm.get_account_info = saved
+        restore()
+
+
+def test_can_open_trade_adds_only_when_others_protected():
+    saved = (rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped, rm.MAX_OPEN_TRADES, rm.get_account_info,
+             getattr(rm._cfg, "MAX_UNPROTECTED_TRADES", None))
+    rm.is_daily_loss_exceeded, rm.MAX_OPEN_TRADES, rm._cfg.MAX_UNPROTECTED_TRADES = (lambda: False), 5, 2
+    rm.get_account_info = lambda: NS(balance=5000, equity=5000, margin_free=5000, margin=0)   # nivel sin tope propio
+    sell = lambda sl: NS(type=mt5.ORDER_TYPE_SELL, symbol=rm.SYMBOL, magic=rm.MAGIC_NUMBER, price_open=100.0, sl=sl)
+    pos = []
+    restore = _mt5(positions_get=lambda *a, **k: pos, account_info=lambda: NS(balance=1000, equity=1000, margin_free=1000, margin=0))
+    try:
+        pos[:] = [sell(110.0), sell(110.0)]                                # 2 a riesgo → la 3.ª espera
+        ok, why = rm.can_open_trade("SELL"); assert not ok and "BE+" in why
+        pos[:] = [sell(99.5), sell(110.0)]                                 # una ya en BE+ → sí entra
+        ok, why = rm.can_open_trade("SELL"); assert ok, why
+    finally:
+        (rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped, rm.MAX_OPEN_TRADES, rm.get_account_info,
+         rm._cfg.MAX_UNPROTECTED_TRADES) = saved
+        restore()
+
+
 def test_news_cache_from_another_week_is_unavailable():
     from bot_engine import news_filter as nf
     from datetime import timedelta
@@ -1232,6 +1285,13 @@ def test_trend_family_cap_and_session_vwap():
         assert capped < full                                                       # la familia EMA vota menos
     finally:
         sg._cfg.TREND_FAMILY_CAP = saved
+
+
+def test_trend_partial_ema_turns_earlier():
+    from bot_engine import signals as sg
+    ind = {"ema9": 102, "ema21": 104, "ema50": 100, "ema200": 103}      # sin cascada: 9 < 21 pero 9 > 50
+    assert sg._determine_trend(ind) == "up"                             # regla actual (EMA50)
+    assert sg._determine_trend(ind, "ema21") == "down"                  # variante rápida
 
 
 def test_backtest_r_distribution_counts_every_trade():
