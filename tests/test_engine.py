@@ -1308,7 +1308,9 @@ def test_symbol_resolves_per_broker_name():
     from bot_engine.symbols import pick_symbol
     s = lambda name, spread, mode=4: NS(name=name, spread=spread, trade_mode=mode)
     vt = [s("BTCXAU", 5), s("XAUEUR-ECN", 3), s("XAUUSD-ECN", 11), s("XAUUSD247", 22), s("XAUUSD.crp", 1, 0)]
-    assert pick_symbol("XAUUSD", ("GOLD",), vt) == ("XAUUSD-ECN", ["XAUUSD-ECN", "XAUUSD247"])   # cruces y .crp fuera
+    assert pick_symbol("XAUUSD", ("GOLD",), vt) == ("XAUUSD-ECN", ["XAUUSD-ECN"])   # cruces, .crp y 24/7 fuera
+    vt_rollover = [s("XAUUSD-ECN", 45), s("XAUUSD247", 22)]                # spread ECN abierto a medianoche (VPS 04-nov)
+    assert pick_symbol("XAUUSD", ("GOLD",), vt_rollover)[0] == "XAUUSD-ECN"
     assert pick_symbol("XAUUSD", (), [s("XAUUSD", 30), s("XAUUSDm", 10)])[0] == "XAUUSD"          # exacto gana
     assert pick_symbol("XAUUSD", (), [s("XAUUSD", 30, 0), s("#XAUUSD", 10)])[0] == "#XAUUSD"      # exacto no operable
     assert pick_symbol("XAUUSD", ("GOLD",), [s("GOLD.pro", 9), s("GOLDEUR", 2)])[0] == "GOLD.pro"

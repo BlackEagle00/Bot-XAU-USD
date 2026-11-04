@@ -11,7 +11,8 @@ from datetime import datetime
 import MetaTrader5 as m
 
 SYM, PT = "XAUUSD-ECN", 0.01
-_R = r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Git\Bot-XAU-USD"
+from pathlib import Path
+_R = str(Path(__file__).resolve().parents[1])   # raíz del repo (PC o VPS)
 
 
 def walk(buy, e, sl, tp, bars):

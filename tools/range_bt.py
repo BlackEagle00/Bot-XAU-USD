@@ -5,7 +5,8 @@ por ask), SL más allá del extremo de la ruptura, SL primero si una vela toca a
 Elige la variante en muestra (2/3 iniciales) y reporta fuera de muestra (1/3 final). Uso: python tools/range_bt.py [M15|M5]"""
 import sys
 import numpy as np, pandas as pd
-R = r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Git\Bot-XAU-USD"
+from pathlib import Path
+R = str(Path(__file__).resolve().parents[1])   # raíz del repo (PC o VPS)
 sys.path[:0] = [R + r"\xauusd_scalping_bot", R]
 from bot_engine.indicators import calc_adx, calc_atr   # noqa: E402
 D = R + r"\backtesting\data\\"

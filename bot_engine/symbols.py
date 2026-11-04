@@ -34,6 +34,8 @@ def pick_symbol(base: str, aliases, infos) -> tuple:
             before, after = n[:pos], n[pos + len(k):]
             if after[:3] in _CCY or (len(before) >= 3 and before.isalpha()):   # GOLDEUR, BTCXAUUSD: otro activo
                 continue
+            if after[:1].isdigit():   # XAUUSD247: oro 24/7 sintético, otro instrumento (ganaba si el ECN abría el spread)
+                continue
             cands.append(i)
             break
     if not cands:

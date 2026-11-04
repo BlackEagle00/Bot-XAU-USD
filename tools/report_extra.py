@@ -9,7 +9,8 @@ from datetime import datetime
 import MetaTrader5 as m
 import pandas as pd
 
-_R = r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Git\Bot-XAU-USD"
+from pathlib import Path
+_R = str(Path(__file__).resolve().parents[1])   # raíz del repo (PC o VPS)
 sys.path[:0] = [_R + r"\xauusd_scalping_bot", _R]          # indicators importa el config del bot
 from bot_engine.indicators import calc_atr, calc_ema, calc_rsi  # noqa: E402
 from bot_engine.trade_manager import _progressive_lock_sl  # noqa: E402

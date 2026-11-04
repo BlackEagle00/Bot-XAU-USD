@@ -1,7 +1,8 @@
 """Solo lectura: % de velas M15 cerradas con ATR(14) <= umbral (tope 15 % con lote 0.01), por periodo, hora y día."""
 import math, sys, time
 import MetaTrader5 as m, pandas as pd
-R = r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Git\Bot-XAU-USD"
+from pathlib import Path
+R = str(Path(__file__).resolve().parents[1])   # raíz del repo (PC o VPS)
 sys.path[:0] = [R + r"\xauusd_scalping_bot", R]
 from bot_engine.indicators import calc_atr
 m.initialize(); S = "XAUUSD-ECN"

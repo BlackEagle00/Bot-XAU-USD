@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import MetaTrader5 as mt5
 
-ROOT = Path(r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Git\Bot-XAU-USD")
+ROOT = Path(__file__).resolve().parents[1]
 BOTS = {20260618: "swing", 20260621: "scalping", 20260622: "grid"}
 start_local, bal0 = datetime.strptime(sys.argv[1], "%Y-%m-%d %H:%M"), float(sys.argv[2])
 mt5.initialize()

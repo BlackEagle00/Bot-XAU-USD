@@ -3,7 +3,8 @@ Barrera pura como las hipotéticas en vivo (sin BE/trailing): entrada a la apert
 SL 1.5×ATR / TP 3×ATR, SL primero si una vela toca ambos, cierre por tiempo a los 120 min (8 velas M15)."""
 import sys
 import numpy as np, pandas as pd
-R = r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Git\Bot-XAU-USD"
+from pathlib import Path
+R = str(Path(__file__).resolve().parents[1])   # raíz del repo (PC o VPS)
 sys.path[:0] = [R + r"\xauusd_scalping_bot", R]
 from bot_engine.indicators import regime_labels   # noqa: E402
 D = R + r"\backtesting\data\\"

@@ -3,7 +3,8 @@ Lote = risk_manager.lot_plan del capital simulado en cada entrada (como decide()
 Autocomprobación: los capitales que la sombra ya simula deben salir igual que su state.json."""
 import json, re, sys
 from types import SimpleNamespace as NS
-R = r"C:\Users\Andrés Bonilla\Documents\ProyectosClaude\Proyecto Bot XAUUSD Git\Bot-XAU-USD"
+from pathlib import Path
+R = str(Path(__file__).resolve().parents[1])   # raíz del repo (PC o VPS)
 sys.path[:0] = [R + r"\xauusd_scalping_bot", R]
 import config; config.LOG_FILE = R + r"\logs\sim_parallel\shadow_replay.log"   # nunca el log del bot
 import MetaTrader5 as mt5
