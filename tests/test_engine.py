@@ -1343,6 +1343,29 @@ def test_backtest_fine_entry_on_lower_tf():
     assert run("confirm") == "noexec"                               # sin vela a favor: sin operación
 
 
+
+def test_cash_flow_restarts_dd_cut():
+    saved = (rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped, rm._cash_ts, rm.server_now, rm._cfg.MAX_DD_PCT, rm.get_account_info)
+    rm.is_daily_loss_exceeded, rm.server_now, rm._cfg.MAX_DD_PCT = (lambda: False), (lambda: datetime(2026, 11, 12)), 0.5
+    rm._peak, rm._dd_stopped, rm._cash_ts = 320.0, True, 0          # cuenta quemada: corte total activo
+    acc, deals = NS(balance=100, equity=100, margin_free=100, margin=0), []
+    rm.get_account_info = lambda: acc
+    restore = _mt5(positions_get=lambda *a, **k: [], account_info=lambda: acc, history_deals_get=lambda *a, **k: deals)
+    try:
+        assert not rm.can_open_trade("BUY")[0]                          # sin depósito sigue bloqueado
+        deals.append(NS(type=mt5.DEAL_TYPE_BUY, time=50))                # una operación no es depósito
+        assert not rm.can_open_trade("BUY")[0]
+        deals.append(NS(type=mt5.DEAL_TYPE_BALANCE, time=100))           # refondeo → arranca de nuevo
+        ok, why = rm.can_open_trade("BUY"); assert ok and rm._peak == 100 and rm._cash_ts == 100, why
+        acc.equity = acc.balance = 40                                    # retiro de 60 (< 50 % del pico)
+        deals.append(NS(type=mt5.DEAL_TYPE_BALANCE, time=200))
+        ok, why = rm.can_open_trade("BUY"); assert ok and rm._peak == 40, why
+        acc.equity = 19                                                  # pérdida real de trading: sí corta
+        assert not rm.can_open_trade("BUY")[0] and rm._dd_stopped
+    finally:
+        (rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped, rm._cash_ts, rm.server_now, rm._cfg.MAX_DD_PCT, rm.get_account_info) = saved
+        restore()
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for t in tests:

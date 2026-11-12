@@ -32,7 +32,7 @@ STALE_TICK_SEC = getattr(_cfg, "STALE_TICK_SEC", 120)          # precio sin camb
 
 IDLE, DRAINING, SAFE = "IDLE", "DRAINING", "SAFE_MODE"
 
-_DEFAULT = {"last_trade_bar": None, "peak": 0.0, "dd_stopped": False, "halt_day": None,
+_DEFAULT = {"last_trade_bar": None, "peak": 0.0, "dd_stopped": False, "cash_ts": 0, "halt_day": None,
             "order_fails": 0, "breaker": None}
 state = dict(_DEFAULT)
 _saved = None

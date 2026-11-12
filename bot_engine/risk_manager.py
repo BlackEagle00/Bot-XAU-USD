@@ -34,7 +34,8 @@ from .telegram_notifier import notify
 _halt_day = None    # día (hora servidor) en que se tocó el límite diario → bloquea hasta el siguiente
 _alerted = set()    # (día, alcance, umbral) ya avisados con DAILY_LOSS_ALERT_ONLY
 _peak = 0.0         # equity máxima vista por este proceso (corte total MAX_DD_PCT)
-_dd_stopped = False # el corte total no se suelta solo: hay que reiniciar el bot
+_dd_stopped = False # el corte total no se suelta solo: un depósito/retiro o editar state.json
+_cash_ts = 0        # hora (servidor) del último depósito/retiro ya aplicado al corte total
 
 # Niveles por capital: (capital mínimo, nombre, máx. operaciones abiertas, pérdida diaria máx.).
 # None = usar el valor del config. Un config puede definir su propio CAPITAL_TIERS.
@@ -378,6 +379,11 @@ def is_daily_loss_exceeded() -> bool:
 # VALIDACIÓN GLOBAL ANTES DE ABRIR
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def new_cash_flow(deals, seen: int) -> int:
+    """Hora (servidor) del depósito/retiro más reciente posterior a `seen`; 0 si no hay ninguno nuevo."""
+    return max((d.time for d in deals if d.type == mt5.DEAL_TYPE_BALANCE and d.time > seen), default=0)
+
+
 def dd_halted(equity: float, peak: float, pct) -> bool:
     """Corte total: la equity cayó `pct` desde su máximo (pct None o 0 = apagado)."""
     return bool(pct) and peak > 0 and equity <= peak * (1 - pct)
@@ -418,12 +424,19 @@ def can_open_trade(action: str, symbol: str = None) -> Tuple[bool, str]:
     acc = get_account_info()
     if acc is None:
         return False, "No se pudo obtener info de la cuenta"
-    global _peak, _dd_stopped
+    global _peak, _dd_stopped, _cash_ts
+    now = server_now()
+    if now is not None:
+        t = new_cash_flow(mt5.history_deals_get(now - timedelta(days=7), now + timedelta(minutes=1)) or [], _cash_ts)
+        if t:   # un depósito o retiro no es ganancia ni pérdida: el corte total arranca de nuevo desde la equity actual
+            _cash_ts, _peak, _dd_stopped = t, acc.equity, False
+            logger.info(f"💵 Depósito/retiro detectado: el corte total se recalcula desde la equity actual ({acc.equity:,.2f})")
     _peak = max(_peak, acc.equity)
     pct = getattr(_cfg, "MAX_DD_PCT", None)
     if _dd_stopped or dd_halted(acc.equity, _peak, pct):
         _dd_stopped = True
-        return False, f"Corte total: la equity cayó {pct:.0%} desde su máximo ({_peak:,.2f}); reinicia el bot para seguir"
+        return False, (f"Corte total: la equity cayó {pct:.0%} desde su máximo ({_peak:,.2f}); "
+                       "se suelta con un depósito/retiro o editando state.json")
     tier = capital_tier(min(acc.balance, acc.equity))
     # Todas las posiciones de este MAGIC, en cualquier activo: el nivel limita el riesgo TOTAL abierto
     every = mt5.positions_get()

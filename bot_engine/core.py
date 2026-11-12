@@ -92,6 +92,7 @@ def _reject(msg: str) -> None:
 def _persist() -> None:
     """Guarda en disco lo que un reinicio no debe olvidar (última vela operada, pico de equity, cortes)."""
     coordinator.save_state(last_trade_bar=_last_trade_bar, peak=_rm._peak, dd_stopped=_rm._dd_stopped,
+                           cash_ts=_rm._cash_ts,
                            halt_day=_rm._halt_day.isoformat() if _rm._halt_day else None)
 
 
@@ -582,6 +583,7 @@ def run():
     st = coordinator.load_state()
     _last_trade_bar = st["last_trade_bar"]
     _rm._peak, _rm._dd_stopped = float(st["peak"] or 0.0), bool(st["dd_stopped"])
+    _rm._cash_ts = int(st["cash_ts"] or 0)
     _rm._halt_day = date.fromisoformat(st["halt_day"]) if st["halt_day"] else None
     acc = get_account_info()
     coordinator.start(acc)
