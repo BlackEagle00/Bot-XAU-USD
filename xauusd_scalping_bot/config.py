@@ -104,11 +104,11 @@ TRAIL_LOCK_FULL_ATR   = 2.7     # Llega al MAX cuando el profit alcanza 2.7×ATR
 # ─── SEÑALES ───────────────────────────────────────────────────────────────────
 MIN_SIGNAL_SCORE    = 6.5      # "las mejores operaciones" (usuario 2026-10-27). Backtest XAUUSD-ECN 3 años, spread real 11 pts, 1 trade, 1 000 USD: 5.5 PF 1.04 +97 % / 6.5 PF 1.06 (IS 1.06, OOS 1.05) +106 % / 7.5 PF 1.02 +23 %
 ATR_VOLATILITY_MAX  = 8.5      # 2026-11-17 (usuario): 7.5 → 8.5. Backtest 3 años 500 USD: PF 1.15 → 1.17, OOS 1.18 → 1.23, 4/6 semestres mejor (7.5 era temporal tras la Fed)
-# ─── MODO CUENTA PEQUEÑA (2026-11-17, usuario) — para < ~300 USD. Con ≥ 300 USD volver a TRADE_HOURS = None ─────────
-# Solo el solapamiento Londres–NY (13–17 GMT = 15–19 h servidor = 8–12 h Colombia) + SELL solo con H1 bajista.
-# Backtest 3 años 500 USD (ATR 8.5): PF 1.17 → 1.28, caída máx. 29 % → 12 %, 4/6 semestres, 73 % menos operaciones.
-# Proyección con 124 USD a 12 meses: típico +133 USD y 25 % de tocar el corte total (horario completo: −28 USD y 75 %).
-TRADE_HOURS            = (15, 16, 17, 18)   # horas servidor de APERTURA de la vela de entrada; None = todas
+# ─── HORARIO (2026-11-17, usuario): opera todo el día, también con cuenta pequeña ────────────────────────────────
+# Probado: solo solapamiento Londres–NY (15–18 h servidor = 8–12 h Colombia) daba PF 1.28 / caída 12 % y, con 124 USD,
+# 25 % de tocar el corte en 12 meses (todo el día: 67 %). El usuario prefiere no limitar horas. Exigir más score fuera
+# del solapamiento NO ayudó (score ≥ 7–9: PF 1.15–1.17, igual o peor), así que no se usa.
+TRADE_HOURS            = None               # p.ej. (15, 16, 17, 18) = solo solapamiento; None = todas las horas
 REQUIRE_MACRO_FOR_SELL = True               # SELL solo si la tendencia H1 es bajista
 # 2026-10-28 (usuario): ALTA_VOLATILIDAD_ANÓMALA = vela M1 con rango > 3× la media de las 20 previas; sin entradas
 # COOLING_DOWN_PERIOD min. Regla de mechas >70 % descartada (29 % de las velas M1 → bloqueo permanente).
