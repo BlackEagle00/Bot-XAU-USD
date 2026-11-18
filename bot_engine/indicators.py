@@ -391,3 +391,88 @@ def anomalous_bars(high, low, mult: float, lookback: int = 20) -> np.ndarray:
     rng = pd.Series(np.asarray(high, float) - np.asarray(low, float))
     avg = rng.shift(1).rolling(lookback).mean()
     return (rng > mult * avg).to_numpy()
+
+
+# ── Estrategias complementarias (SIGNAL_SOURCES / DXY_VETO). Apagadas por defecto; las mismas funciones las usan
+#    core en vivo (última fila = última vela cerrada) y el backtest (todo el histórico de una vez). ──────────────
+def _ohlc(df: pd.DataFrame):
+    return tuple(df[k].astype(float) for k in ("open", "high", "low", "close"))
+
+
+def london_breakout(df: pd.DataFrame, asia=(2, 10), london=(10, 13), buf_atr: float = 0.0,
+                    trend: bool = True) -> np.ndarray:
+    """+1/-1 en la vela que cierra fuera del rango asiático del mismo día servidor dentro de la ventana de Londres
+    (horas servidor de APERTURA de la vela; 10 h servidor ≈ apertura de Londres). Solo la primera ruptura por día y
+    lado; trend=True exige EMA21 vs EMA50 a favor. Causal: el rango solo usa velas asiáticas, todas anteriores."""
+    _, h, l, c = _ohlc(df)
+    idx = pd.DatetimeIndex(df.index)
+    hr, day = idx.hour, idx.normalize()
+    in_asia = (hr >= asia[0]) & (hr < asia[1])
+    in_lon = (hr >= london[0]) & (hr < london[1])
+    a_hi = h.where(in_asia).groupby(day).transform("max")
+    a_lo = l.where(in_asia).groupby(day).transform("min")
+    pad = buf_atr * calc_atr(h, l, c) if buf_atr else 0.0
+    up, dn = in_lon & (c > a_hi + pad), in_lon & (c < a_lo - pad)
+    if trend:
+        e21, e50 = calc_ema(c, 21), calc_ema(c, 50)
+        up, dn = up & (e21 > e50), dn & (e21 < e50)
+    up = up & (up.groupby(day).cumsum() == 1)
+    dn = dn & (dn.groupby(day).cumsum() == 1)
+    return np.where(up, 1, np.where(dn, -1, 0)).astype(int)
+
+
+def smc_retest(df: pd.DataFrame, lookback: int = 48, impulse_atr: float = 1.0, trend: bool = True) -> np.ndarray:
+    """+1/-1 en la vela que vuelve a una zona SMC aún válida y cierra a favor (alcista: toca la zona y cierra verde).
+    Zonas, nacidas al cerrar la vela j tras una vela de impulso j-1 (cuerpo ≥ impulse_atr×ATR):
+      Fair Value Gap: low[j] > high[j-2] (alcista) / high[j] < low[j-2] (bajista);
+      Order Block: la vela j-2 contraria al impulso (su rango completo).
+    Una zona vale `lookback` velas, se usa desde j+1, se consume al primer toque y se invalida si una vela cierra
+    al otro lado. El resultado en la vela i solo depende de las ~lookback+3 velas previas (vivo = backtest)."""
+    so, sh, sl, sc = _ohlc(df)
+    o, h, l, c = so.to_numpy(), sh.to_numpy(), sl.to_numpy(), sc.to_numpy()
+    atr = calc_atr(sh, sl, sc).to_numpy(float)
+    e21, e50 = calc_ema(sc, 21).to_numpy(), calc_ema(sc, 50).to_numpy()
+    out, zones = np.zeros(len(c), int), []                  # zona = (lado, abajo, arriba, vela de nacimiento)
+    for i in range(len(c)):
+        keep = []
+        for side, bot, top, born in zones:
+            if i - born > lookback or (side > 0 and c[i] < bot) or (side < 0 and c[i] > top):
+                continue                                    # caducada o invalidada
+            ok_trend = not trend or (e21[i] > e50[i] if side > 0 else e21[i] < e50[i])
+            touched = (l[i] <= top and c[i] > o[i]) if side > 0 else (h[i] >= bot and c[i] < o[i])
+            if touched and ok_trend and out[i] == 0:
+                out[i] = side                               # consumida
+                continue
+            keep.append((side, bot, top, born))
+        zones = keep
+        if i >= 2 and atr[i - 1] == atr[i - 1] and abs(c[i - 1] - o[i - 1]) >= impulse_atr * atr[i - 1]:
+            bull = c[i - 1] > o[i - 1]
+            if bull and l[i] > h[i - 2]:
+                zones.append((1, h[i - 2], l[i], i))
+            if not bull and h[i] < l[i - 2]:
+                zones.append((-1, h[i], l[i - 2], i))
+            if bull and c[i - 2] < o[i - 2]:
+                zones.append((1, l[i - 2], h[i - 2], i))
+            if not bull and c[i - 2] > o[i - 2]:
+                zones.append((-1, l[i - 2], h[i - 2], i))
+    return out
+
+
+def extra_source(df: pd.DataFrame, name: str, cfg) -> np.ndarray:
+    """Señal (+1/-1/0 por vela) de una fuente complementaria de SIGNAL_SOURCES con los parámetros del config."""
+    if name == "lb":
+        return london_breakout(df, tuple(getattr(cfg, "LB_ASIA_HOURS", (2, 10))),
+                               tuple(getattr(cfg, "LB_LONDON_HOURS", (10, 13))),
+                               float(getattr(cfg, "LB_BUFFER_ATR", 0.0)), bool(getattr(cfg, "LB_TREND", True)))
+    if name == "smc":
+        return smc_retest(df, int(getattr(cfg, "SMC_LOOKBACK", 48)), float(getattr(cfg, "SMC_IMPULSE_ATR", 1.0)),
+                          bool(getattr(cfg, "SMC_TREND", True)))
+    raise ValueError(f"fuente desconocida: {name}")
+
+
+def dxy_bias(close) -> np.ndarray:
+    """Sesgo del índice dólar por vela cerrada (regla de get_intermarket_bias): EMA21/EMA50 alineadas y precio del
+    lado correcto = ±2 (fuerte); solo precio vs EMA50 = ±1; si no, 0."""
+    c = pd.Series(np.asarray(close, float))
+    f, s = c.ewm(span=21, adjust=False).mean(), c.ewm(span=50, adjust=False).mean()
+    return np.select([(f > s) & (c > f), (f < s) & (c < f), c > s, c < s], [2, -2, 1, -1], 0)

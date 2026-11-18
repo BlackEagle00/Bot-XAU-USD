@@ -42,7 +42,7 @@ from .data_handler import (
     get_symbol_info, get_open_positions,
     get_orderflow_delta, get_intermarket_bias, server_now, fetch_ohlcv,
 )
-from .indicators import calculate_all, regime_labels, anomalous_bars
+from .indicators import calculate_all, regime_labels, anomalous_bars, extra_source
 from .patterns import analyze_patterns
 from .signals import generate_signal
 from .news_filter import in_news_blackout
@@ -238,6 +238,7 @@ def _run_cycle():
     patterns = analyze_patterns(data["primary"], trend)
     signal  = generate_signal(price, ind_primary, ind_trend, patterns, atr,
                               ind_higher, orderflow=of_delta, intermarket=im_bias)
+    signal  = _extra_sources(signal, data["primary"])
 
     # ── 9. Intentar abrir un nuevo trade si hay señal válida ──────────────────
     if USE_GRID and signal["action"] in ("BUY", "SELL") and gatr:
@@ -264,6 +265,15 @@ def _run_cycle():
         if atr_max and atr > atr_max:               # pausa por volatilidad extrema: el SL (×ATR) costaría demasiado
             _reject(f"🌪 {signal['action']} bloqueado: ATR {atr:.2f} sobre el máximo {atr_max} (ATR_VOLATILITY_MAX)")
             return
+        hours = getattr(_cfg, "TRADE_HOURS", None)
+        if hours and _entry_hour(data["primary"]) not in hours:
+            _reject(f"🕒 {signal['action']} bloqueado: hora servidor {_entry_hour(data['primary'])} fuera de TRADE_HOURS")
+            return
+        if getattr(_cfg, "DXY_VETO", False):        # oro inverso al dólar: DXY subiendo fuerte veta compras y viceversa
+            dxy = im_bias if im_bias is not None else get_intermarket_bias()
+            if dxy == (("up", True) if signal["action"] == "BUY" else ("down", True)):
+                _reject(f"💵 {signal['action']} bloqueado: DXY {dxy[0]} fuerte en contra (DXY_VETO)")
+                return
         an = _anomaly_now(tick) if getattr(_cfg, "USE_ANOMALY_FILTER", False) else None
         if an:
             if getattr(_cfg, "ANOMALY_BLOCK", False):
@@ -285,6 +295,26 @@ def _run_cycle():
     # ── 10. Resumen periódico ─────────────────────────────────────────────────
     if _cycle_num % 20 == 0:
         _print_status()
+
+
+def _extra_sources(signal: dict, prim) -> dict:
+    """SIGNAL_SOURCES (= backtest): sin "base" la señal del motor no opera; si la base no dispara, la primera fuente
+    complementaria (London breakout "lb", SMC "smc") que dé señal en la última vela cerrada la sustituye."""
+    srcs = tuple(getattr(_cfg, "SIGNAL_SOURCES", None) or ("base",))
+    if srcs == ("base",) or ("base" in srcs and signal["action"] in ("BUY", "SELL")):
+        return signal
+    for name in srcs:
+        if name != "base":
+            d = int(extra_source(prim, name, _cfg)[-1])
+            if d:
+                return {**signal, "action": "BUY" if d > 0 else "SELL", "source": name,
+                        "reason": f"fuente {name}"}
+    return {**signal, "action": "HOLD"}
+
+
+def _entry_hour(prim) -> int:
+    """Hora servidor de apertura de la vela de entrada (= la siguiente a la última cerrada), como el backtest."""
+    return int((prim.index[-1].timestamp() + _tf_minutes(_cfg.PRIMARY_TF) * 60) // 3600) % 24
 
 
 def _tf_minutes(tf) -> int:

@@ -145,8 +145,8 @@ ORDERFLOW_MIN_TICKS     = 50      # mínimo de ticks para fiarse del cálculo
 # El oro es INVERSO al dólar: DXY bajando = viento de cola alcista para el oro.
 # ⚠ Verifica el nombre del símbolo del índice dólar en tu broker (Market Watch).
 #    XM suele usar "USDX". Si no existe, el factor se desactiva solo (sin error).
-USE_INTERMARKET     = False         # Apagado: "USDX-SEP26" venció y ya era un no-op en vivo; el backtest no
-INTERMARKET_SYMBOL  = "USDX"        # lo simula. Este bróker lista "USDX": encenderlo exige medirlo antes.
+USE_INTERMARKET     = False         # Apagado: "USDX-SEP26" venció y ya era un no-op en vivo; el backtest ya
+INTERMARKET_SYMBOL  = "USDX."       # lo simula. Nombre exacto en este bróker (MT5, 2026-11-17): "USDX.".  Medirlo antes de encender.
 INTERMARKET_INVERSE = True              # oro/EUR son inversos al USD
 INTERMARKET_TF      = mt5.TIMEFRAME_H4  # TF para medir la tendencia del DXY (swing)
 INTERMARKET_CANDLES = 200

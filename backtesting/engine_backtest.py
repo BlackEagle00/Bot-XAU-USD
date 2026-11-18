@@ -63,7 +63,11 @@ POST_KEYS = {"MAX_RISK_MIN_LOT", "MICRO_SL_FIT", "MICRO_MIN_SL_ATR", "GRID_EXEC_
              "ENTRY_EXEC_TF", "ENTRY_MODE", "ENTRY_PULLBACK_ATR", "MIN_LOT_CAP_HARD", "BT_FIXED_SL_PRICE", "BT_FIXED_TP_PRICE",
              "ANOMALY_BLOCK", "ANOMALY_RANGE_MULT", "ANOMALY_LOOKBACK", "COOLING_DOWN_PERIOD",
              "BT_SPREAD_MULT", "BT_SPREAD_OFFSET_POINTS", "M30_FILTER",
-             "USE_TRAILING_STOP", "USE_BREAKEVEN", "USE_PROGRESSIVE_TRAIL", "BE_TRIGGER_PCT"}   # gestión de la posición: no cambia las señales
+             "USE_TRAILING_STOP", "USE_BREAKEVEN", "USE_PROGRESSIVE_TRAIL", "BE_TRIGGER_PCT",
+             "ATR_VOLATILITY_MAX", "USE_ANTI_DUPLICATE", "ANTI_DUP_ATR_MULT",
+             # filtros y fuentes complementarias aplicados después del caché (core los aplica igual en vivo)
+             "TRADE_HOURS", "DXY_VETO", "SIGNAL_SOURCES", "LB_ASIA_HOURS", "LB_LONDON_HOURS", "LB_BUFFER_ATR", "LB_TREND",
+             "SMC_LOOKBACK", "SMC_IMPULSE_ATR", "SMC_TREND"}   # gestión de la posición: no cambia las señales
 
 # (SL, TP) en múltiplos de ATR. (None, None) = los del config. TP < SL sube el acierto y baja la ganancia por operación.
 COMBOS = [(None, None), (1.5, 0.5), (1.5, 0.75), (1.5, 1.0), (2.0, 0.5), (2.0, 0.75), (2.0, 1.0), (2.0, 1.5)]
@@ -316,7 +320,15 @@ def _signal_at(i):
     atr = ip.get("atr")
     if atr is None:
         return i, "HOLD", 0.0, None, None, "neutral"
-    s = _W["sig"](price, ip, it, _W["pat"](prim, _W["trend"](ip)), atr, ih)
+    im = None
+    if getattr(cfg, "USE_INTERMARKET", False) and f.get("d") is not None:          # mismo sesgo DXY que get_intermarket_bias en vivo
+        ddf, dc = f["d"]
+        kd = closed_upto(dc, t)
+        if kd >= 60:
+            from bot_engine.indicators import dxy_bias
+            v = int(dxy_bias(ddf["close"].iloc[max(0, kd - cfg.INTERMARKET_CANDLES):kd])[-1])
+            im = {2: ("up", True), -2: ("down", True), 1: ("up", False), -1: ("down", False)}.get(v, ("neutral", False))
+    s = _W["sig"](price, ip, it, _W["pat"](prim, _W["trend"](ip)), atr, ih, intermarket=im)
     feats = None
     if s["action"] in ("BUY", "SELL"):
         feats = _W["feat"](1 if s["action"] == "BUY" else -1, price, ip, it, ih, s, spread, t)
@@ -943,15 +955,18 @@ def prepare_data(config, primary: str, years: float, refresh: bool = False, end:
         return start - timedelta(minutes=TF_MIN[tf] * n * 1.6)
 
     frames, coverage = {}, {}
+    dxy = getattr(config, "DXY_VETO", False) or getattr(config, "USE_INTERMARKET", False)
     for key, tf, n in (("p", primary, config.CANDLES_PRIMARY), ("t", trend_tf, config.CANDLES_TREND),
                        ("h", higher_tf, config.CANDLES_HIGHER), ("x", exec_tf if exec_tf != primary else None, 200),
-                       ("m", "M30" if getattr(config, "M30_FILTER", None) else None, 250)):
+                       ("m", "M30" if getattr(config, "M30_FILTER", None) else None, 250),
+                       ("d", "H1" if dxy else None, getattr(config, "INTERMARKET_CANDLES", 200))):
         if tf is None:
             frames[key] = None
             continue
-        df = fetch(mt5, sym_name, tf, warm(tf, n), end, refresh)
+        name = config.INTERMARKET_SYMBOL if key == "d" else sym_name     # "d" = índice dólar (DXY)
+        df = fetch(mt5, name, tf, warm(tf, n), end, refresh)
         if df.empty:
-            sys.exit(f"Sin histórico para {sym_name} {tf}")
+            sys.exit(f"Sin histórico para {name} {tf}")
         frames[key] = (df, close_times(df["time"].to_numpy(np.int64), tf))
         in_range = df[df["time"] >= int(start.timestamp())]
         coverage[tf] = {"bars": int(len(in_range)),
@@ -1098,6 +1113,23 @@ def main():
     atr_at = np.full(len(p), np.nan)
     atr_at[sig["i"].to_numpy()] = pd.to_numeric(sig["atr"], errors="coerce").to_numpy(float)
     ev = sig[sig["action"].isin(["BUY", "SELL"])].reset_index(drop=True)
+    srcs = tuple(getattr(config, "SIGNAL_SOURCES", None) or ("base",))
+    if srcs != ("base",):                                          # fuentes complementarias (= core._extra_sources)
+        from bot_engine.indicators import extra_source
+        pi = p.set_index(pd.to_datetime(p["time"], unit="s"))
+        ev = ev if "base" in srcs else ev.iloc[0:0]
+        taken, rows = set(ev["i"].astype(int)), []
+        for name in srcs:                                          # en vivo: la base manda; luego el orden de srcs
+            if name == "base":
+                continue
+            sgn = extra_source(pi, name, config)
+            for i in np.flatnonzero(sgn):
+                if first_idx <= i < len(p) - 1 and int(i) not in taken:
+                    taken.add(int(i))
+                    rows.append({"i": int(i), "action": "BUY" if sgn[i] > 0 else "SELL", "src": name})
+        ev = pd.concat([ev, pd.DataFrame(rows, columns=["i", "action", "src"])], ignore_index=True)
+        ev = ev.sort_values("i").reset_index(drop=True)
+        print(f"  fuentes {srcs}: +{len(rows)} señales extra", flush=True)
     print(f"  señales listas ({time.time() - t0:.0f}s) → BUY {int((ev.action == 'BUY').sum())} | "
           f"SELL {int((ev.action == 'SELL').sum())}", flush=True)
 
@@ -1130,6 +1162,7 @@ def main():
 
     regimes = regime_labels(p, getattr(config, "ADX_MIN_TREND", 20))
     skip_reg = set(getattr(config, "SKIP_REGIMES", ()) or ())         # mismo filtro que core en vivo
+    atr_max = getattr(config, "ATR_VOLATILITY_MAX", None)             # mismo filtro que core en vivo (🌪)
     anom_t = None
     if getattr(config, "ANOMALY_BLOCK", False):                       # mismo filtro M1 que core._anomaly_now
         from bot_engine.indicators import anomalous_bars
@@ -1163,13 +1196,30 @@ def main():
         n = closed_upto(m_close, int(t_open_k[k]))
         return n == 0 or m30_dir[n - 1] != (1 if s == BUY else -1)
 
+    t_entry = p["time"].to_numpy(np.int64)                           # apertura de la vela de entrada (hora servidor)
+    hours = set(getattr(config, "TRADE_HOURS", None) or ())          # mismo filtro horario que core en vivo
+    dxy_dir = None
+    if getattr(config, "DXY_VETO", False):                            # mismo veto DXY que core en vivo
+        from bot_engine.indicators import dxy_bias
+        ddf, d_close = frames["d"]
+        dxy_dir = dxy_bias(ddf["close"])
+
+    def blocked_extra(k, s):
+        """Horario fuera de TRADE_HOURS, o DXY fuerte en contra (oro inverso: DXY subiendo fuerte veta compras)."""
+        if hours and (int(t_entry[k]) // 3600) % 24 not in hours:
+            return True
+        if dxy_dir is None:
+            return False
+        n = closed_upto(d_close, int(t_entry[k]))
+        return n > 0 and dxy_dir[n - 1] == (2 if s == BUY else -2)
+
     def cands_for(plan):
         """Velas de entrada → resultado. plan None = todas las señales con el SL/TP base."""
         out = {}
         for j, (i, s) in enumerate(zip(ev["i"], sides)):
             c = COMBOS[0] if plan is None else plan.get(int(i))
             o = outs[c][j] if c in outs else None
-            if isinstance(o, tuple) and str(regimes[int(i) + 1]) not in skip_reg and not anomalous(int(i) + 1)                     and not m30_against(int(i) + 1, int(s)):
+            if isinstance(o, tuple) and str(regimes[int(i) + 1]) not in skip_reg and not anomalous(int(i) + 1)                     and not m30_against(int(i) + 1, int(s)) and not (atr_max and atr_at[int(i)] > atr_max)                     and not blocked_extra(int(i) + 1, int(s)):
                 out[int(i) + 1] = (int(s), o[0], o[1], o[2], o[3], o[4], float(atr_at[int(i)]),
                                    (c[1] or config.TP_ATR_MULT) / (c[0] or config.SL_ATR_MULT))
         return out
@@ -1185,7 +1235,7 @@ def main():
               "costs": {"spread": "real por hora" if getattr(config, "BT_REAL_SPREAD", False) else "mínimo de la vela",
                         "commission_per_lot": comm, "slippage_points_per_side": slip,
                         "swap_points_long_short": [getattr(config, "BT_SWAP_LONG_POINTS", 0.0), getattr(config, "BT_SWAP_SHORT_POINTS", 0.0)],
-                        "skip_regimes": sorted(skip_reg)},
+                        "skip_regimes": sorted(skip_reg), "atr_volatility_max": atr_max},
               "not_simulated": ["filtro de noticias", "order-flow", "DXY", "margen"]
                                + ([] if getattr(config, "BT_SWAP_LONG_POINTS", 0.0) else ["swaps"])
                                + ([] if comm else ["comisiones"]) + ([] if slip else ["slippage"])}
@@ -1196,7 +1246,9 @@ def main():
             trades, curve, blocked = simulate(cands, p, sym, vpu, config, rm, bal, start_k, outcome)
             m = report[key][f"{bal:.0f}"] = {**metrics(trades, curve, bal, with_daily=f"{bal:.0f}" == top_bal),
                                              "blocked": blocked, "split": split_stats(trades, t_split),
-                                             "by_regime": regime_stats(trades, regimes, tt)}
+                                             "by_regime": regime_stats(trades, regimes, tt),
+                                             "trades_list": [[t["open_time"], t["close_time"], t["pnl"], t["lot"], t["r"]]
+                                                             for t in trades]}   # proyecciones por mes/ventana
             print(f"  {key:<8} {bal:>8,.0f} → {m['verdict']:<15} op {m['trades']:>5} | acierto {m['win_rate_pct']:>5}% | "
                   f"PF {m['profit_factor']} | neto {m['net_return_pct']:+.1f}% | DD {m['max_drawdown_pct']:.1f}%", flush=True)
             if f"{bal:.0f}" == top_bal and a.mc:

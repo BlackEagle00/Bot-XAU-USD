@@ -185,21 +185,9 @@ def get_intermarket_bias() -> Optional[tuple]:
         logger.debug(f"Inter-mercado: '{INTERMARKET_SYMBOL}' no disponible en el broker.")
         return None
 
-    rates = mt5.copy_rates_from_pos(INTERMARKET_SYMBOL, INTERMARKET_TF, 0, INTERMARKET_CANDLES)
-    if rates is None or len(rates) < 60:
+    df = fetch_ohlcv(INTERMARKET_SYMBOL, INTERMARKET_TF, INTERMARKET_CANDLES + 1)   # sin la vela en formación
+    if df is None or len(df) < 60:
         return None
-
-    close    = pd.Series([float(r["close"]) for r in rates])
-    ema_fast = close.ewm(span=21, adjust=False).mean().iloc[-1]
-    ema_slow = close.ewm(span=50, adjust=False).mean().iloc[-1]
-    price    = close.iloc[-1]
-
-    if ema_fast > ema_slow and price > ema_fast:
-        return ("up", True)
-    if ema_fast < ema_slow and price < ema_fast:
-        return ("down", True)
-    if price > ema_slow:
-        return ("up", False)
-    if price < ema_slow:
-        return ("down", False)
-    return ("neutral", False)
+    from .indicators import dxy_bias                    # misma regla que el backtest
+    v = int(dxy_bias(df["close"])[-1])
+    return {2: ("up", True), -2: ("down", True), 1: ("up", False), -1: ("down", False)}.get(v, ("neutral", False))

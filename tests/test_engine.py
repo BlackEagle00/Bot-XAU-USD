@@ -1366,6 +1366,65 @@ def test_cash_flow_restarts_dd_cut():
         (rm.is_daily_loss_exceeded, rm._peak, rm._dd_stopped, rm._cash_ts, rm.server_now, rm._cfg.MAX_DD_PCT, rm.get_account_info) = saved
         restore()
 
+
+def _ohlc_frame(n=1200, seed=3):
+    import numpy as np, pandas as pd
+    rng = np.random.default_rng(seed)
+    c = 4000 + rng.normal(0, 3, n).cumsum()
+    o = np.r_[c[0], c[:-1]]
+    idx = pd.date_range("2026-01-05", periods=n, freq="15min")
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) + 1.5, "low": np.minimum(o, c) - 1.5, "close": c}, index=idx)
+
+
+def test_extra_sources_do_not_look_ahead_and_match_live():
+    from bot_engine.indicators import london_breakout, smc_retest, dxy_bias
+    df = _ohlc_frame()
+    for f in (lambda d: london_breakout(d, trend=False), lambda d: smc_retest(d, impulse_atr=0.8, trend=False)):
+        full = f(df)
+        assert (full != 0).sum() > 0                                             # el detector dispara
+        fut = df.copy()
+        fut.iloc[900:, :] *= 1.05                                               # cambiar el futuro…
+        assert (f(fut)[:900] == full[:900]).all()                               # …no cambia el pasado
+        for k in (400, 777, 1100):                                              # vivo: última fila = última cerrada
+            assert f(df.iloc[:k + 1])[-1] == full[k]
+    lb = london_breakout(df, trend=False)
+    hrs = df.index.hour[lb != 0]
+    assert ((hrs >= 10) & (hrs < 13)).all()                                     # solo en la ventana de Londres
+    days = df.index.normalize()[lb != 0]
+    assert len(set(zip(days, lb[lb != 0]))) == (lb != 0).sum()                   # una por día y lado
+    b = dxy_bias(df["close"])
+    assert set(b) <= {-2, -1, 0, 1, 2} and dxy_bias(df["close"].iloc[:601])[-1] == b[600]
+
+
+def test_core_extra_sources_and_trade_hours():
+    import numpy as np
+    import bot_engine.core as core
+    df = _ohlc_frame()
+    saved = {k: getattr(core._cfg, k, None) for k in ("SIGNAL_SOURCES", "SMC_IMPULSE_ATR", "SMC_TREND")}
+    try:
+        core._cfg.SIGNAL_SOURCES = ("base",)
+        hold = {"action": "HOLD", "score": 1.0}
+        assert core._extra_sources(hold, df) is hold                            # apagado = sin cambios
+        core._cfg.SIGNAL_SOURCES, core._cfg.SMC_IMPULSE_ATR, core._cfg.SMC_TREND = ("base", "smc"), 0.8, False
+        from bot_engine.indicators import smc_retest
+        sig = smc_retest(df, impulse_atr=0.8, trend=False)
+        k = int(np.flatnonzero(sig)[5])
+        out = core._extra_sources(hold, df.iloc[:k + 1])
+        assert out["action"] == ("BUY" if sig[k] > 0 else "SELL") and out["source"] == "smc"
+        buy = {"action": "BUY", "score": 7.0}
+        assert core._extra_sources(buy, df.iloc[:k + 1]) is buy                 # la base manda
+        core._cfg.SIGNAL_SOURCES = ("smc",)                                     # sin "base": la base no opera
+        assert core._extra_sources(buy, df.iloc[:k + 1])["action"] == ("BUY" if sig[k] > 0 else "SELL")
+        # hora de la vela de entrada = la siguiente a la última cerrada (= backtest (t_open // 3600) % 24)
+        assert core._entry_hour(df.iloc[:4]) == (int(df.index[4].timestamp()) // 3600) % 24
+    finally:
+        for key, v in saved.items():
+            if v is None:
+                core._cfg.__dict__.pop(key, None)
+            else:
+                setattr(core._cfg, key, v)
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for t in tests:
