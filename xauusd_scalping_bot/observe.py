@@ -22,7 +22,7 @@ from bot_engine.symbols import resolve_symbol   # noqa: E402
 config.SYMBOL = resolve_symbol(config.SYMBOL, getattr(config, "SYMBOL_ALIASES", ()))
 
 import MetaTrader5 as mt5                       # noqa: E402
-from bot_engine import core, connection, journal  # noqa: E402
+from bot_engine import core, connection, coordinator, journal  # noqa: E402
 from bot_engine.logger_config import logger     # noqa: E402
 
 
@@ -50,6 +50,7 @@ def arm():
         setattr(mt5, name, _no_orders)
     core.open_trade = _observe
     connection._account_allowed = _allowed
+    coordinator.OBSERVE = True                        # sin esto la cuenta real dispara SAFE_MODE y la sombra no ve nada
     for name in ("order_send", "order_check"):        # autocomprobación antes de conectar
         try:
             getattr(mt5, name)({})

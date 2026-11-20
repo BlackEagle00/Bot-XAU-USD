@@ -1066,13 +1066,17 @@ def test_entry_gate_terminal_account_and_stale_tick():
         co._tick_seen = (1000, co.time.monotonic() - co.STALE_TICK_SEC - 1)
         assert "precio sin cambios" in co.entry_gate("X", own, tick)[1]   # mismo tick hace demasiado
         assert co.entry_gate("X", own, NS(time=1001))[0]                   # llega un tick nuevo: sigue
-        mt5.account_info = lambda: NS(login=1, trade_mode=demo + 2)        # la misma cuenta pasó a real
+        mt5.account_info = lambda: NS(login=1, trade_mode=demo + 2)        # cuenta real…
+        co.OBSERVE = True                                                  # …en observación (órdenes anuladas): pasa
+        assert co.entry_gate("X", own, NS(time=1002))[0] and not co.state["breaker"]
+        co.OBSERVE = False                                                 # la misma cuenta pasó a real sin permiso
         assert co.entry_gate("X", own, NS(time=1002))[2] == co.SAFE and co.state["breaker"]
         _fresh_co(); co._login = 1
         mt5.account_info = lambda: NS(login=2, trade_mode=demo)            # cambiaron la cuenta del terminal
         assert co.entry_gate("X", own, NS(time=1003))[2] == co.SAFE
     finally:
         restore()
+        co.OBSERVE = False
         if live is not None:
             os.environ["ALLOW_LIVE_TRADING"] = live
         _fresh_co()

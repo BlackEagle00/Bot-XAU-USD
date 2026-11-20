@@ -38,6 +38,7 @@ state = dict(_DEFAULT)
 _saved = None
 _lock_fh = None
 _login = None                 # cuenta con la que arrancó el bot
+OBSERVE = False               # observe.py: órdenes anuladas en el proceso → la cuenta real no dispara SAFE_MODE
 _config_errors = []           # validate_config(): no se persisten, se corrigen editando el config
 _tick_seen = (None, 0.0)      # (tick.time, reloj monotónico cuando cambió por última vez)
 
@@ -228,7 +229,7 @@ def entry_gate(symbol: str, own_magic: int, tick):
     if _login is not None and acc.login != _login:
         trip("la cuenta del terminal cambió durante la ejecución")
         return False, state["breaker"]["reason"], SAFE
-    if acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and os.getenv("ALLOW_LIVE_TRADING") != "1":
+    if acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and os.getenv("ALLOW_LIVE_TRADING") != "1" and not OBSERVE:
         trip("cuenta REAL sin ALLOW_LIVE_TRADING=1")
         return False, state["breaker"]["reason"], SAFE
     now = time.monotonic()

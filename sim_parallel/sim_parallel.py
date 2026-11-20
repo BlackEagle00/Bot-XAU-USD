@@ -27,7 +27,7 @@ BOT = ROOT / "xauusd_scalping_bot"
 OUT = ROOT / "logs" / "sim_parallel"
 DOC = ROOT / "docs" / "SIM_COMP_2026-10.md"
 PROFILES = Path(__file__).with_name("brokers_profile.json")
-BALANCES = (67.77, 100, 500, 1000, 5000)           # 67.77 = balance real del usuario (2026-10-29)
+BALANCES = (124, 300, 500)                         # 124 = capital previsto para ene-2027; 300 = umbral de horario completo
 TRACKS = ("", "VETO|")                             # "" = señales del bot; "VETO|" = vetadas por ⛔ ADX/tendencia
 BOT_GATES = ("🌡", "🌪", "📰", "🧭", "🧠")          # filtros del bot iguales para todo capital y bróker
 STATES = ("EJECUTADA", "TRADE_REJECTED", "SIGNAL_BLOCKED", "BLOQUEADA_BOT", "OCUPADA")
